@@ -74,9 +74,11 @@ FNCViewer 采用 Tauri 双层架构：
 ### 5.1 文件打开链路
 
 1. 用户选择文件或双击文件启动
-2. Rust `open_nc_file` 返回 `ParseResult`
-3. 前端 `parseNcToFrames` 生成 `FrameState[]`
-4. 编辑器与 3D 视图同步刷新
+2. 文件列表单击即切换并加载目标文件
+3. 同目录文件扫描仅包含 `.nc/.anc`
+4. Rust `open_nc_file` 返回 `ParseResult`
+5. 前端 `parseNcToFrames` 生成 `FrameState[]`
+6. 编辑器与 3D 视图同步刷新
 
 ### 5.2 路径联动链路
 

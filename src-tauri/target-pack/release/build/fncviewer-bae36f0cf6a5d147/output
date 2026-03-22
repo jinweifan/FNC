@@ -1,0 +1,36 @@
+cargo:rerun-if-changed=tauri.conf.json
+cargo:rerun-if-changed=icons/icon.ico
+cargo:rerun-if-changed=icons/icon.icns
+cargo:rerun-if-changed=icons/icon.png
+cargo:rerun-if-changed=icons/32x32.png
+cargo:rerun-if-changed=icons/128x128.png
+cargo:rerun-if-changed=icons/128x128@2x.png
+cargo:rerun-if-env-changed=TAURI_CONFIG
+cargo:rustc-check-cfg=cfg(desktop)
+cargo:rustc-cfg=desktop
+cargo:rustc-check-cfg=cfg(mobile)
+cargo:rerun-if-changed=C:\Users\Reddyfan\Desktop\code\FNC\src-tauri\tauri.conf.json
+cargo:rustc-env=TAURI_ANDROID_PACKAGE_NAME_APP_NAME=desktop
+cargo:rustc-env=TAURI_ANDROID_PACKAGE_NAME_PREFIX=com_fncviewer
+cargo:rustc-check-cfg=cfg(dev)
+cargo:PERMISSION_FILES_PATH=C:\Users\Reddyfan\Desktop\code\FNC\src-tauri\target-pack\release\build\fncviewer-bae36f0cf6a5d147\out\app-manifest\__app__-permission-files
+cargo:rerun-if-changed=capabilities
+cargo:rerun-if-env-changed=REMOVE_UNUSED_COMMANDS
+cargo:rustc-env=TAURI_ENV_TARGET_TRIPLE=x86_64-pc-windows-msvc
+package.metadata does not exist
+Microsoft (R) Windows (R) Resource Compiler Version 10.0.10011.16384
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+cargo:rustc-link-arg-bins=C:\Users\Reddyfan\Desktop\code\FNC\src-tauri\target-pack\release\build\fncviewer-bae36f0cf6a5d147\out\resource.lib
+cargo:rustc-link-search=native=C:\Users\Reddyfan\Desktop\code\FNC\src-tauri\target-pack\release\build\fncviewer-bae36f0cf6a5d147\out
+cargo:rustc-link-arg=/NODEFAULTLIB:libvcruntimed.lib
+cargo:rustc-link-arg=/NODEFAULTLIB:vcruntime.lib
+cargo:rustc-link-arg=/NODEFAULTLIB:vcruntimed.lib
+cargo:rustc-link-arg=/NODEFAULTLIB:libcmtd.lib
+cargo:rustc-link-arg=/NODEFAULTLIB:msvcrt.lib
+cargo:rustc-link-arg=/NODEFAULTLIB:msvcrtd.lib
+cargo:rustc-link-arg=/NODEFAULTLIB:libucrt.lib
+cargo:rustc-link-arg=/NODEFAULTLIB:libucrtd.lib
+cargo:rustc-link-arg=/DEFAULTLIB:libcmt.lib
+cargo:rustc-link-arg=/DEFAULTLIB:libvcruntime.lib
+cargo:rustc-link-arg=/DEFAULTLIB:ucrt.lib

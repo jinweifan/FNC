@@ -22,6 +22,12 @@ npm ci
 - Rust 与 cargo 可用
 - Tauri CLI 可用
 
+若是通过 `rustup` 安装 Rust，请确保 shell 已加载：
+
+```bash
+source "$HOME/.cargo/env"
+```
+
 ## 3. Windows x64 打包
 
 ### 3.1 命令
@@ -72,6 +78,25 @@ npm run tauri:build:linux
 - `librsvg2-dev`
 - `patchelf`
 
+首次环境可执行：
+
+```bash
+curl https://sh.rustup.rs -sSf | sh -s -- -y
+source "$HOME/.cargo/env"
+sudo apt update
+sudo apt install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf build-essential pkg-config
+```
+
+若出现以下错误：
+
+- `failed to run 'cargo metadata' ... No such file or directory (os error 2)`
+
+处理方式：
+
+1. 先执行 `source "$HOME/.cargo/env"`
+2. 运行 `cargo --version`，确认可见
+3. 再执行 `npm run tauri:build:linux`
+
 ## 5. macOS Apple Silicon 打包
 
 说明：建议在 macOS Apple Silicon 机器或 macOS ARM CI 上执行。
@@ -104,6 +129,13 @@ npm run tauri:build:mac:arm
 - `fnc-linux-x64`
 - `fnc-macos-intel`
 - `fnc-macos-apple-silicon`
+
+## 8. 常见打包报错补充
+
+- Windows `os error 5`（failed to remove fncviewer.exe）：
+  关闭正在运行的 FNCViewer，再打包；必要时换一个新的 `CARGO_TARGET_DIR`。
+- NSIS 下载超时（`timeout: global`）：
+  网络问题，重试或改用 GitHub Actions 打包。
 
 ## 7. 发布建议
 

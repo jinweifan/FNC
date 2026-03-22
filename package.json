@@ -6,13 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "tauri": "set \"PATH=%USERPROFILE%\\.cargo\\bin;%PATH%\" && tauri",
+    "tauri": "tauri",
     "tauri:dev": "npm run tauri -- dev",
     "tauri:build": "npm run tauri -- build",
     "tauri:build:win": "npm run tauri -- build --bundles nsis,msi",
-    "tauri:build:linux": "npm run tauri -- build --target x86_64-unknown-linux-gnu --bundles appimage,deb",
-    "tauri:build:mac:intel": "npm run tauri -- build --target x86_64-apple-darwin --bundles app,dmg",
-    "tauri:build:mac:arm": "npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg",
+    "tauri:build:linux": "bash -lc 'source \"$HOME/.cargo/env\" 2>/dev/null || true; npm run tauri -- build --target x86_64-unknown-linux-gnu --bundles appimage,deb'",
+    "tauri:build:mac:intel": "bash -lc 'source \"$HOME/.cargo/env\" 2>/dev/null || true; npm run tauri -- build --target x86_64-apple-darwin --bundles app,dmg'",
+    "tauri:build:mac:arm": "bash -lc 'source \"$HOME/.cargo/env\" 2>/dev/null || true; npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg'",
     "lint": "eslint .",
     "preview": "vite preview"
   },

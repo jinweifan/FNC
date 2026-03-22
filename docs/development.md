@@ -68,11 +68,20 @@ cargo check
 原因：Rust 工具链未安装。  
 处理：安装 Rust 并确认 `cargo --version`。
 
+Linux/macOS 若已安装但仍报错，先执行：
+
+```bash
+source "$HOME/.cargo/env"
+cargo --version
+```
+
+再执行打包命令。
+
 ### 7.2 关闭窗口失败（权限报错）
 
 检查 `src-tauri/capabilities/default.json` 权限配置与前端关闭逻辑是否一致。
 
-### 7.3 双击 `.nc` 启动未自动打开文件
+### 7.3 双击 `.nc/.anc` 启动未自动打开文件
 
 检查：
 

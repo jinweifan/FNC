@@ -1,0 +1,10 @@
+C:\Users\Reddyfan\Desktop\code\FNC\src-tauri\target-pack\release\deps\toml_datetime-e0ab9ae1bfc6803a.d: C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\lib.rs C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\datetime.rs C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\de.rs C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\ser.rs
+
+C:\Users\Reddyfan\Desktop\code\FNC\src-tauri\target-pack\release\deps\libtoml_datetime-e0ab9ae1bfc6803a.rlib: C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\lib.rs C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\datetime.rs C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\de.rs C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\ser.rs
+
+C:\Users\Reddyfan\Desktop\code\FNC\src-tauri\target-pack\release\deps\libtoml_datetime-e0ab9ae1bfc6803a.rmeta: C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\lib.rs C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\datetime.rs C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\de.rs C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\ser.rs
+
+C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\lib.rs:
+C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\datetime.rs:
+C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\de.rs:
+C:\Users\Reddyfan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\toml_datetime-0.7.5+spec-1.1.0\src\ser.rs:
