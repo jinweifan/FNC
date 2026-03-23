@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-fncviewer-nc">
+    <comment>NC Program</comment>
+    <glob pattern="*.nc"/>
+  </mime-type>
+  <mime-type type="application/x-fncviewer-anc">
+    <comment>ANC Program</comment>
+    <glob pattern="*.anc"/>
+  </mime-type>
+</mime-info>

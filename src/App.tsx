@@ -1,8 +1,10 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { message, open, save } from "@tauri-apps/plugin-dialog";
-import Editor, { type OnMount } from "@monaco-editor/react";
+import Editor, { loader, type OnMount } from "@monaco-editor/react";
+import * as monacoApi from "monaco-editor";
 import type * as Monaco from "monaco-editor";
 import { useTranslation } from "react-i18next";
 import {
@@ -40,6 +42,9 @@ import "./App.css";
 import { Viewer3D } from "./components/Viewer3D";
 import type { CameraState, FrameState, NcFileItem, NcMode, ParseResult, Vec3 } from "./types";
 import { parseNcToFrames } from "./lib/ncPath";
+
+// Force local Monaco runtime (no CDN), critical for offline/Linux package environments.
+loader.config({ monaco: monacoApi });
 
 type ThemeMode = "system" | "light" | "navy" | "xdark";
 type SpeedMode = "Low" | "Standard" | "High";
@@ -504,6 +509,8 @@ function App() {
   const [viewerHotkeyScope, setViewerHotkeyScope] = useState(false);
   const [status, setStatus] = useState(t("ready"));
   const [showShortcutModal, setShowShortcutModal] = useState(false);
+  const [editorReady, setEditorReady] = useState(false);
+  const [fallbackEditor, setFallbackEditor] = useState(false);
   const [shortcuts, setShortcuts] = useState<ShortcutMap>(() => {
     const raw = localStorage.getItem(STORAGE_SHORTCUTS_KEY);
     if (!raw) return defaultShortcuts;
@@ -623,12 +630,12 @@ function App() {
       .sort((a, b) => b.lastOpenedAtMs - a.lastOpenedAtMs)
       .slice(0, 10);
   }, [fileSearch, recentFiles]);
+  const codeLines = useMemo(() => code.split(/\r?\n/), [code]);
   const currentNcLineText = useMemo(() => {
-    if (!currentFrame || !code) return "-";
-    const lines = code.split(/\r?\n/);
-    const raw = lines[Math.max(0, currentFrame.lineNumber - 1)] ?? "";
+    if (!currentFrame || !codeLines.length) return "-";
+    const raw = codeLines[Math.max(0, currentFrame.lineNumber - 1)] ?? "";
     return raw.trim() || "-";
-  }, [code, currentFrame]);
+  }, [codeLines, currentFrame]);
 
   useEffect(() => {
     framesRef.current = frames;
@@ -692,6 +699,15 @@ function App() {
       monacoRef.current.editor.setTheme("nc-x-dark");
     }
   }, [resolvedTheme]);
+
+  useEffect(() => {
+    if (editorReady || fallbackEditor) return;
+    const timer = window.setTimeout(() => {
+      setFallbackEditor(true);
+      setStatus((prev) => `${prev} | Monaco loading timeout, switched to fallback editor`);
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [editorReady, fallbackEditor]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -792,14 +808,22 @@ function App() {
   useEffect(() => {
     if (launchFileHandledRef.current) return;
     launchFileHandledRef.current = true;
+    let unlistenLaunch: (() => void) | null = null;
     if (!inTauriRuntime()) {
       setLaunchProbeDone(true);
       return;
     }
     void (async () => {
       try {
-        const launchPath = await invoke<string | null>("get_launch_nc_file");
-        if (launchPath) {
+        unlistenLaunch = await listen<string>("launch-nc-file", async (event) => {
+          const launchPath = event.payload;
+          if (!launchPath) return;
+          await loadNcFileWithFolderContext(launchPath);
+        });
+
+        const pendingLaunches = await invoke<string[]>("take_pending_launch_nc_files");
+        for (const launchPath of pendingLaunches) {
+          if (!launchPath) continue;
           await loadNcFileWithFolderContext(launchPath);
         }
       } catch {
@@ -808,6 +832,9 @@ function App() {
         setLaunchProbeDone(true);
       }
     })();
+    return () => {
+      if (unlistenLaunch) unlistenLaunch();
+    };
   }, [loadNcFileWithFolderContext]);
 
   useEffect(() => {
@@ -907,6 +934,8 @@ function App() {
   }, [currentFrame, isPlaying]);
 
   const onEditorMount: OnMount = (editor, monaco) => {
+    setEditorReady(true);
+    setFallbackEditor(false);
     monacoRef.current = monaco;
     editorRef.current = editor;
     registerNcLanguage(monaco);
@@ -1457,15 +1486,35 @@ function App() {
           {showEditor && (
           <section className="editor-pane panel" style={showViewer ? { flex: `0 0 ${editorWidth}px` } : { flex: "1 1 auto" }}>
             <h3>{t("editor")}</h3>
-            <Editor
-              height="100%"
-              language="ncgcode"
-              theme={resolvedTheme === "light" ? "nc-light" : (resolvedTheme === "navy" ? "nc-dark" : "nc-x-dark")}
-              value={code}
-              onMount={onEditorMount}
-              onChange={(v) => setCode(v ?? "")}
-              options={{ minimap: { enabled: false }, fontSize: 13, folding: true, glyphMargin: true, smoothScrolling: true, lineNumbers: "on" }}
-            />
+            {!fallbackEditor ? (
+              <Editor
+                height="100%"
+                language="ncgcode"
+                theme={resolvedTheme === "light" ? "nc-light" : (resolvedTheme === "navy" ? "nc-dark" : "nc-x-dark")}
+                value={code}
+                onMount={onEditorMount}
+                onChange={(v) => setCode(v ?? "")}
+                options={{ minimap: { enabled: false }, fontSize: 13, folding: true, glyphMargin: true, smoothScrolling: true, lineNumbers: "on" }}
+              />
+            ) : (
+              <textarea
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  resize: "none",
+                  border: "none",
+                  outline: "none",
+                  background: resolvedTheme === "light" ? "#ffffff" : (resolvedTheme === "navy" ? "#0f172a" : "#16181c"),
+                  color: resolvedTheme === "light" ? "#0f172a" : "#e7e9ea",
+                  fontFamily: "Consolas, Monaco, 'Courier New', monospace",
+                  fontSize: 13,
+                  lineHeight: 1.45,
+                  padding: 12,
+                }}
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+              />
+            )}
           </section>
           )}
 

@@ -28,6 +28,16 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/FNCViewer.desktop",
+        "files": {
+          "/usr/share/mime/packages/fncviewer.xml": "linux/fncviewer.xml"
+        },
+        "postInstallScript": "linux/postinst.sh",
+        "postRemoveScript": "linux/postrm.sh"
+      }
+    },
     "fileAssociations": [
       {
         "ext": [
@@ -37,7 +47,7 @@
         "name": "NC Program",
         "description": "Numerical Control Program File",
         "role": "Editor",
-        "mimeType": "text/plain"
+        "mimeType": "application/x-fncviewer-nc"
       }
     ],
     "icon": [

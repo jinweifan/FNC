@@ -778,7 +778,7 @@ export function Viewer3D({
       <Canvas
         camera={cameraInit}
         dpr={canvasDpr}
-        gl={{ antialias: false, powerPreference: "high-performance", alpha: false, stencil: false }}
+        gl={{ antialias: true, powerPreference: "high-performance", alpha: false, stencil: false }}
         onPointerMissed={() => {
           setIsPickTargetHovered(false);
           onFrameHoverEnd?.();
@@ -858,8 +858,8 @@ export function Viewer3D({
           enablePan
           enableRotate
           enableZoom
-          enableDamping={adaptiveFactor >= 0.62}
-          dampingFactor={0.075}
+          enableDamping={false}
+          dampingFactor={0}
           rotateSpeed={1.6}
           panSpeed={1.0}
           zoomSpeed={0.9}

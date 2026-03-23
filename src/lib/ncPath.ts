@@ -130,7 +130,8 @@ function centerFromR(startX: number, startY: number, endX: number, endY: number,
   return d1 >= d2 ? c1 : c2;
 }
 
-function interpolateArc(
+function appendArcFrames(
+  frames: FrameState[],
   start: { x: number; y: number; z: number },
   end: { x: number; y: number; z: number },
   words: Words,
@@ -138,7 +139,7 @@ function interpolateArc(
   lineNumber: number,
   indexStart: number,
   axisDomain: "xyz" | "uvw"
-): FrameState[] {
+): number {
   const cw = motion === "ArcCw";
   let centerX: number;
   let centerY: number;
@@ -149,44 +150,41 @@ function interpolateArc(
   } else if (typeof words.R === "number") {
     const c = centerFromR(start.x, start.y, end.x, end.y, words.R, cw);
     if (!c) {
-      return [
-        {
-          index: indexStart,
-          lineNumber,
-          position: end,
-          motion,
-          axisDomain,
-          pausedByBreakpoint: false,
-        },
-      ];
+      frames.push({
+        index: indexStart,
+        lineNumber,
+        position: end,
+        motion,
+        axisDomain,
+        pausedByBreakpoint: false,
+      });
+      return 1;
     }
     centerX = c.x;
     centerY = c.y;
   } else {
-    return [
-      {
-        index: indexStart,
-        lineNumber,
-        position: end,
-        motion,
-        axisDomain,
-        pausedByBreakpoint: false,
-      },
-    ];
+    frames.push({
+      index: indexStart,
+      lineNumber,
+      position: end,
+      motion,
+      axisDomain,
+      pausedByBreakpoint: false,
+    });
+    return 1;
   }
 
   const radius = Math.hypot(start.x - centerX, start.y - centerY);
   if (radius < 1e-9) {
-    return [
-      {
-        index: indexStart,
-        lineNumber,
-        position: end,
-        motion,
-        axisDomain,
-        pausedByBreakpoint: false,
-      },
-    ];
+    frames.push({
+      index: indexStart,
+      lineNumber,
+      position: end,
+      motion,
+      axisDomain,
+      pausedByBreakpoint: false,
+    });
+    return 1;
   }
 
   const startAng = Math.atan2(start.y - centerY, start.x - centerX);
@@ -198,13 +196,11 @@ function interpolateArc(
 
   const segCount = Math.max(12, Math.min(256, Math.ceil((radius * sweep) / 5)));
   const dz = (end.z - start.z) / segCount;
-
-  const out: FrameState[] = [];
   for (let i = 1; i <= segCount; i += 1) {
     const t = i / segCount;
     const ang = cw ? startAng - sweep * t : startAng + sweep * t;
-    out.push({
-      index: indexStart + out.length,
+    frames.push({
+      index: indexStart + i - 1,
       lineNumber,
       position: {
         x: centerX + Math.cos(ang) * radius,
@@ -216,8 +212,7 @@ function interpolateArc(
       pausedByBreakpoint: false,
     });
   }
-
-  return out;
+  return segCount;
 }
 
 export function parseNcToFrames(content: string, mode: NcMode = "normal"): FrameState[] {
@@ -265,23 +260,18 @@ export function parseNcToFrames(content: string, mode: NcMode = "normal"): Frame
     const mapped = toTarget(state, words, mode, axisDomain);
     const target = mapped.target;
 
-    let added: FrameState[];
     if (state.motion === "ArcCw" || state.motion === "ArcCcw") {
-      added = interpolateArc(start, target, words, state.motion, i + 1, frames.length, axisDomain);
+      appendArcFrames(frames, start, target, words, state.motion, i + 1, frames.length, axisDomain);
     } else {
-      added = [
-        {
-          index: frames.length,
-          lineNumber: i + 1,
-          position: target,
-          motion: state.motion,
-          axisDomain,
-          pausedByBreakpoint: false,
-        },
-      ];
+      frames.push({
+        index: frames.length,
+        lineNumber: i + 1,
+        position: target,
+        motion: state.motion,
+        axisDomain,
+        pausedByBreakpoint: false,
+      });
     }
-
-    frames.push(...added);
     state.x = target.x;
     state.y = target.y;
     state.z = target.z;
@@ -300,5 +290,5 @@ export function parseNcToFrames(content: string, mode: NcMode = "normal"): Frame
     });
   }
 
-  return frames.map((f, idx) => ({ ...f, index: idx }));
+  return frames;
 }

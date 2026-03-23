@@ -11,6 +11,27 @@ node_modules
 dist
 dist-ssr
 *.local
+coverage
+.cache
+.tmp
+tmp
+
+# Tauri / Rust build outputs
+src-tauri/target
+target
+
+# Packaged artifacts
+*.AppImage
+*.deb
+*.msi
+*.dmg
+*.app
+*.exe
+
+# Env / OS temp
+.env
+.env.*
+Thumbs.db
 
 # Editor directories and files
 .vscode/*

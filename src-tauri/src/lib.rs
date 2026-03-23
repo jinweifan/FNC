@@ -16,6 +16,7 @@ struct AppState {
     sessions: Mutex<HashMap<u64, SimulationSessionInternal>>,
     next_session_id: AtomicU64,
     locale: Mutex<String>,
+    pending_launch_files: Mutex<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -617,6 +618,15 @@ fn get_launch_nc_file() -> Option<String> {
         .find_map(|path| path.to_str().map(|s| s.to_string()))
 }
 
+#[tauri::command]
+fn take_pending_launch_nc_files(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    let mut lock = state
+        .pending_launch_files
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
+    Ok(std::mem::take(&mut *lock))
+}
+
 fn normalize_launch_arg_to_file(raw: &str) -> Option<PathBuf> {
     let arg = raw.trim();
     if arg.is_empty() {
@@ -639,6 +649,23 @@ fn normalize_launch_arg_to_file(raw: &str) -> Option<PathBuf> {
     }
 
     Some(path)
+}
+
+fn collect_launch_paths_from_args() -> Vec<String> {
+    std::env::args_os()
+        .skip(1)
+        .filter_map(|arg| normalize_launch_arg_to_file(arg.to_string_lossy().as_ref()))
+        .filter_map(|path| path.to_str().map(|s| s.to_string()))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_opened_url_to_file(url: &url::Url) -> Option<String> {
+    let path = url.to_file_path().ok()?;
+    if !path.is_file() {
+        return None;
+    }
+    path.to_str().map(|s| s.to_string())
 }
 
 
@@ -825,11 +852,14 @@ fn apply_adaptive_window_size(app: &tauri::App) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let initial_launch_files = collect_launch_paths_from_args();
+
     tauri::Builder::default()
         .manage(AppState {
             sessions: Mutex::new(HashMap::new()),
             next_session_id: AtomicU64::new(0),
             locale: Mutex::new("zh-CN".to_string()),
+            pending_launch_files: Mutex::new(initial_launch_files),
         })
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -855,10 +885,33 @@ pub fn run() {
             export_nc_file,
             set_locale,
             list_nc_files_in_folder,
-            get_launch_nc_file
+            get_launch_nc_file,
+            take_pending_launch_nc_files
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(not(target_os = "macos"))]
+            let _ = (&app, &event);
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = event {
+                let files: Vec<String> = urls
+                    .iter()
+                    .filter_map(normalize_opened_url_to_file)
+                    .collect();
+                if files.is_empty() {
+                    return;
+                }
+
+                if let Ok(mut pending) = app.state::<AppState>().pending_launch_files.lock() {
+                    pending.extend(files.iter().cloned());
+                }
+
+                for path in files {
+                    let _ = app.emit("launch-nc-file", path);
+                }
+            }
+        });
 }
 
 
