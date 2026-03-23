@@ -1,7 +1,7 @@
 import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, Line, OrbitControls } from "@react-three/drei";
 import { MOUSE, Raycaster, Vector2, Vector3 } from "three";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { PerspectiveCamera } from "three";
@@ -470,6 +470,21 @@ export function Viewer3D({
   const [isPickTargetHovered, setIsPickTargetHovered] = useState(false);
   const [hoverTooltip, setHoverTooltip] = useState<HoverTooltipData | null>(null);
   const hoverDelayRef = useRef<number | null>(null);
+  const adaptiveFactor = useMemo(() => {
+    const n = frames.length;
+    if (n > 120_000) return 0.28;
+    if (n > 60_000) return 0.42;
+    if (n > 20_000) return 0.62;
+    return 1;
+  }, [frames.length]);
+  const scaledCount = useCallback((base: number, floor = 1200) => {
+    return Math.max(floor, Math.floor(base * adaptiveFactor));
+  }, [adaptiveFactor]);
+  const canvasDpr = useMemo<[number, number]>(() => {
+    if (adaptiveFactor <= 0.42) return [0.55, 0.9];
+    if (adaptiveFactor < 1) return [0.7, 1];
+    return [0.85, 1.25];
+  }, [adaptiveFactor]);
   const codeLines = useMemo(() => codeContent?.split(/\r?\n/) ?? [], [codeContent]);
   const segmentData = useMemo(() => {
     const cutPoints: Vector3[] = [];
@@ -506,18 +521,31 @@ export function Viewer3D({
         if (b.axisDomain === "uvw") {
           uvwPoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
           uvwPoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+          if (isPlunge) {
+            // Laser-integrated (UVW) plunge segments should also be highlighted in yellow.
+            plungePoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
+            plungePoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+          }
+        } else if (isPlunge) {
+          plungePoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
+          plungePoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
         } else {
-          const target = isPlunge ? plungePoints : cutPoints;
-          target.push(new Vector3(a.position.x, a.position.y, a.position.z));
-          target.push(new Vector3(b.position.x, b.position.y, b.position.z));
+          cutPoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
+          cutPoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
         }
       }
     }
 
     return { cutPoints, uvwPoints, plungePoints, rapidPoints, cutSegments, rapidSegments };
   }, [frames]);
-  const pickCutSegments = useMemo(() => sampleSegments(segmentData.cutSegments, 9000), [segmentData.cutSegments]);
-  const pickRapidSegments = useMemo(() => sampleSegments(segmentData.rapidSegments, 4500), [segmentData.rapidSegments]);
+  const pickCutSegments = useMemo(
+    () => sampleSegments(segmentData.cutSegments, scaledCount(9000, 1800)),
+    [scaledCount, segmentData.cutSegments],
+  );
+  const pickRapidSegments = useMemo(
+    () => sampleSegments(segmentData.rapidSegments, scaledCount(4500, 900)),
+    [scaledCount, segmentData.rapidSegments],
+  );
   const sampledPickSegments = useMemo(
     () => (showRapidPath ? [...pickCutSegments, ...pickRapidSegments] : pickCutSegments),
     [pickCutSegments, pickRapidSegments, showRapidPath],
@@ -528,20 +556,20 @@ export function Viewer3D({
   );
   const centerFrames = useMemo(() => framesForCenter(frames), [frames]);
   const renderCutPoints = useMemo(
-    () => sampleLinePairs(segmentData.cutPoints, isPointerDown ? 9000 : 28000),
-    [isPointerDown, segmentData.cutPoints],
+    () => sampleLinePairs(segmentData.cutPoints, isPointerDown ? scaledCount(9000, 1800) : scaledCount(28000, 3200)),
+    [isPointerDown, scaledCount, segmentData.cutPoints],
   );
   const renderPlungePoints = useMemo(
-    () => sampleLinePairs(segmentData.plungePoints, isPointerDown ? 4200 : 14000),
-    [isPointerDown, segmentData.plungePoints],
+    () => sampleLinePairs(segmentData.plungePoints, isPointerDown ? scaledCount(4200, 900) : scaledCount(14000, 1800)),
+    [isPointerDown, scaledCount, segmentData.plungePoints],
   );
   const renderUvwPoints = useMemo(
-    () => sampleLinePairs(segmentData.uvwPoints, isPointerDown ? 7000 : 22000),
-    [isPointerDown, segmentData.uvwPoints],
+    () => sampleLinePairs(segmentData.uvwPoints, isPointerDown ? scaledCount(7000, 1400) : scaledCount(22000, 2800)),
+    [isPointerDown, scaledCount, segmentData.uvwPoints],
   );
   const renderRapidPoints = useMemo(
-    () => sampleLinePairs(segmentData.rapidPoints, isPointerDown ? 6000 : 18000),
-    [isPointerDown, segmentData.rapidPoints],
+    () => sampleLinePairs(segmentData.rapidPoints, isPointerDown ? scaledCount(6000, 1000) : scaledCount(18000, 2400)),
+    [isPointerDown, scaledCount, segmentData.rapidPoints],
   );
 
   const sceneScale = useMemo(() => {
@@ -749,6 +777,8 @@ export function Viewer3D({
     >
       <Canvas
         camera={cameraInit}
+        dpr={canvasDpr}
+        gl={{ antialias: false, powerPreference: "high-performance", alpha: false, stencil: false }}
         onPointerMissed={() => {
           setIsPickTargetHovered(false);
           onFrameHoverEnd?.();
@@ -828,8 +858,8 @@ export function Viewer3D({
           enablePan
           enableRotate
           enableZoom
-          enableDamping
-          dampingFactor={0.08}
+          enableDamping={adaptiveFactor >= 0.62}
+          dampingFactor={0.075}
           rotateSpeed={1.6}
           panSpeed={1.0}
           zoomSpeed={0.9}

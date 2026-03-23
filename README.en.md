@@ -4,6 +4,11 @@
 
 FNCViewer is a cross-platform desktop application for NC viewing, editing, and 3D simulation.
 
+## Quick Start
+
+- We recommend trying the sample files in `demo_nc/` first.
+- Open `.nc/.anc` files from `demo_nc` to validate linkage, simulation, grid, and picking.
+
 ## Featured Capability (Key)
 
 ### Laser Integrated Machine Mode (Core)

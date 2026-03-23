@@ -496,7 +496,10 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [playProgress, setPlayProgress] = useState(0);
   const [showRapidPath, setShowRapidPath] = useState(true);
-  const [showGrid, setShowGrid] = useState(() => localStorage.getItem(STORAGE_SHOW_GRID_KEY) === "true");
+  const [showGrid, setShowGrid] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_SHOW_GRID_KEY);
+    return saved == null ? true : saved === "true";
+  });
   const [showPathTooltip, setShowPathTooltip] = useState(true);
   const [viewerHotkeyScope, setViewerHotkeyScope] = useState(false);
   const [status, setStatus] = useState(t("ready"));
