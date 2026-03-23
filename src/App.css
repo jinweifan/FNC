@@ -53,9 +53,9 @@ html, body, #root { margin: 0; width: 100%; height: 100%; background: var(--bg);
   width: 100%;
   height: 100%;
   display: grid;
-  grid-template-rows: 42px 46px 1fr 32px;
-  gap: 10px;
-  padding: 10px;
+  grid-template-rows: auto auto 1fr 32px;
+  gap: 12px;
+  padding: 18px 10px 10px;
 }
 
 .menu-bar,
@@ -71,7 +71,9 @@ html, body, #root { margin: 0; width: 100%; height: 100%; background: var(--bg);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 10px;
+  padding: 9px 12px;
+  min-height: 56px;
+  gap: 12px;
 }
 
 .menu-left,
@@ -79,7 +81,13 @@ html, body, #root { margin: 0; width: 100%; height: 100%; background: var(--bg);
 .menu-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+}
+
+.menu-right {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  row-gap: 8px;
 }
 
 .menu-tag {
@@ -89,6 +97,21 @@ html, body, #root { margin: 0; width: 100%; height: 100%; background: var(--bg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.menu-mode-readonly {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.menu-mode-readonly b {
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .tool-bar {
@@ -129,8 +152,8 @@ html, body, #root { margin: 0; width: 100%; height: 100%; background: var(--bg);
 .mode-btn {
   border: 1px solid var(--btn-border);
   border-radius: 10px;
-  min-height: 34px;
-  padding: 6px 11px;
+  min-height: 36px;
+  padding: 8px 13px;
   background: var(--btn-bg);
   color: var(--btn-text);
   cursor: pointer;
@@ -197,8 +220,9 @@ select {
   border: 1px solid var(--border);
   background: color-mix(in oklab, var(--panel) 90%, transparent);
   color: var(--text);
-  border-radius: 6px;
-  padding: 4px 6px;
+  border-radius: 9px;
+  padding: 7px 12px;
+  min-height: 36px;
   color-scheme: light;
   outline: none;
 }
@@ -235,7 +259,7 @@ option {
   color: #0f172a;
 }
 
-label { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+label { font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
 
 .workspace-flex {
   flex: 1 1 auto;
@@ -334,6 +358,101 @@ label { font-size: 12px; color: var(--muted); display: inline-flex; align-items:
   padding: 7px 10px;
   border-bottom: 1px solid var(--border);
   font-size: 13px;
+}
+
+/* Monaco built-in find widget theming */
+.monaco-editor .find-widget {
+  border: 1px solid var(--border) !important;
+  border-radius: 10px !important;
+  background: color-mix(in oklab, var(--panel) 96%, transparent) !important;
+  box-shadow: 0 8px 20px color-mix(in oklab, var(--bg) 70%, black 30%) !important;
+}
+
+.monaco-editor .find-widget .monaco-inputbox {
+  border-radius: 8px !important;
+  border-color: color-mix(in oklab, var(--btn-border) 55%, var(--border)) !important;
+  background: color-mix(in oklab, var(--panel) 90%, transparent) !important;
+}
+
+.monaco-editor .find-widget .monaco-inputbox input {
+  color: var(--text) !important;
+}
+
+.monaco-editor .find-widget .matchesCount {
+  display: inline-block !important;
+  min-width: 72px;
+  text-align: right;
+  opacity: 1 !important;
+  visibility: visible !important;
+  color: var(--muted) !important;
+}
+
+.monaco-editor .find-widget .button {
+  border: none !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+  margin-left: 2px;
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  min-height: 24px !important;
+  padding: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  vertical-align: middle !important;
+  box-shadow: none !important;
+  transition: none !important;
+}
+
+.monaco-editor .find-widget .button.toggle {
+  width: 20px !important;
+  min-width: 20px !important;
+  height: calc(100% - 2px) !important;
+  min-height: calc(100% - 2px) !important;
+  margin: 0 !important;
+  left: 2px !important;
+  top: 1px !important;
+  border-radius: 6px !important;
+}
+
+.monaco-editor .find-widget .button.wide {
+  top: 0 !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  line-height: 22px !important;
+  padding: 0 8px !important;
+}
+
+.monaco-editor .find-widget .button:hover {
+  background: transparent !important;
+  color: var(--text) !important;
+}
+
+.monaco-editor .find-widget .button:focus-visible {
+  outline: none !important;
+}
+
+.monaco-editor .find-widget .button.checked,
+.monaco-editor .find-widget .button:active {
+  background: transparent !important;
+  color: var(--text) !important;
+}
+
+.monaco-editor .find-widget .button .codicon,
+.monaco-editor .find-widget .button .codicon::before {
+  font-size: 14px !important;
+  line-height: 1 !important;
+  vertical-align: middle !important;
+}
+
+.monaco-editor .find-widget .findInSelection {
+  display: none !important;
+}
+
+.monaco-editor .find-widget .button.disabled {
+  opacity: 0.45;
 }
 
 .viewer-meta {

@@ -73,7 +73,6 @@ const speedPointsPerSecond: Record<SpeedMode, number> = {
   High: 360,
 };
 const STORAGE_THEME_KEY = "fnc.themeMode";
-const STORAGE_MODE_KEY = "fnc.ncMode";
 const STORAGE_LANG_KEY = "fnc.lang";
 const STORAGE_SHOW_FILES_KEY = "fnc.showFiles";
 const STORAGE_SHOW_EDITOR_KEY = "fnc.showEditor";
@@ -274,6 +273,14 @@ function frameForLine(frames: FrameState[], lineNumber: number): FrameState | nu
 
 function inTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function detectNcMode(content: string): NcMode {
+  const cleaned = content
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/;.*$/gm, " ")
+    .toUpperCase();
+  return /\b(?:U|V|W)[+-]?\d+(?:\.\d+)?\b/.test(cleaned) ? "laser" : "normal";
 }
 
 function registerNcLanguage(monaco: typeof Monaco) {
@@ -528,10 +535,7 @@ function App() {
     if (saved === "dark") return "navy";
     return "system";
   });
-  const [ncMode, setNcMode] = useState<NcMode>(() => {
-    const saved = localStorage.getItem(STORAGE_MODE_KEY);
-    return saved === "laser" ? "laser" : "normal";
-  });
+  const [ncMode, setNcMode] = useState<NcMode>("normal");
   const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const dragState = useRef<{ pane: "files" | "editor"; startX: number; startWidth: number } | null>(null);
 
@@ -648,9 +652,6 @@ function App() {
     localStorage.setItem(STORAGE_THEME_KEY, themeMode);
   }, [themeMode]);
   useEffect(() => {
-    localStorage.setItem(STORAGE_MODE_KEY, ncMode);
-  }, [ncMode]);
-  useEffect(() => {
     localStorage.setItem(STORAGE_SHOW_FILES_KEY, String(showFiles));
   }, [showFiles]);
   useEffect(() => {
@@ -755,7 +756,9 @@ function App() {
   }, [showEditor, showFiles, showViewer]);
 
   const applyLoadedProgram = useCallback((result: ParseResult) => {
-    const nextFrames = parseNcToFrames(result.content, ncMode);
+    const detectedMode = detectNcMode(result.content);
+    setNcMode(detectedMode);
+    const nextFrames = parseNcToFrames(result.content, detectedMode);
     setParseResult(result);
     setCode(result.content);
     setLastSavedContent(result.content);
@@ -766,7 +769,7 @@ function App() {
     setPathNavActive(false);
     setCameraState(cameraForView(nextFrames, "Top"));
     setStatus(`${t("loaded")}: ${result.fileName} (${nextFrames.length} pts)`);
-  }, [ncMode, t, updatePlayProgress]);
+  }, [t, updatePlayProgress]);
 
   const loadNcFile = useCallback(async (path: string) => {
     const result = await invoke<ParseResult>("open_nc_file", { path });
@@ -851,7 +854,9 @@ function App() {
     if (!parseResult) return;
     if (parseDebounceRef.current) window.clearTimeout(parseDebounceRef.current);
     parseDebounceRef.current = window.setTimeout(() => {
-      const updatedByMode = parseNcToFrames(code, ncMode);
+      const detectedMode = detectNcMode(code);
+      setNcMode((prev) => (prev === detectedMode ? prev : detectedMode));
+      const updatedByMode = parseNcToFrames(code, detectedMode);
       setFrames(updatedByMode);
       setCurrentFrame((prev) => {
         if (!updatedByMode.length) return null;
@@ -868,7 +873,7 @@ function App() {
     return () => {
       if (parseDebounceRef.current) window.clearTimeout(parseDebounceRef.current);
     };
-  }, [code, ncMode, parseResult, updatePlayProgress]);
+  }, [code, parseResult, updatePlayProgress]);
 
   useEffect(() => {
     if (!isPlaying || frames.length < 2) return;
@@ -959,6 +964,35 @@ function App() {
       });
     });
   };
+
+  const localizeMonacoFindWidget = useCallback(() => {
+    const root = editorRef.current?.getDomNode();
+    if (!root) return;
+    const setLabel = (selector: string, text: string) => {
+      const el = root.querySelector(selector) as HTMLElement | null;
+      if (!el) return;
+      el.setAttribute("title", text);
+      el.setAttribute("aria-label", text);
+    };
+    setLabel(".find-widget .button.toggle", t("editorToggleReplace"));
+    setLabel(".find-widget .button.previous", t("editorPrevMatch"));
+    setLabel(".find-widget .button.next", t("editorNextMatch"));
+    setLabel(".find-widget .button.replace", t("editorReplace"));
+    setLabel(".find-widget .button.replace-all", t("editorReplaceAll"));
+    setLabel(".find-widget > .button.codicon-widget-close", t("close"));
+  }, [t]);
+
+  useEffect(() => {
+    if (!editorReady) return;
+    localizeMonacoFindWidget();
+    const root = editorRef.current?.getDomNode();
+    if (!root) return;
+    const observer = new MutationObserver(() => {
+      localizeMonacoFindWidget();
+    });
+    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, [editorReady, i18n.language, localizeMonacoFindWidget]);
 
   const startSimulation = async () => {
     if (!frames.length) return;
@@ -1268,20 +1302,6 @@ function App() {
     localStorage.setItem(STORAGE_LANG_KEY, locale);
     await invoke("set_locale", { locale });
   };
-  const changeNcMode = (mode: NcMode) => {
-    setNcMode(mode);
-    if (!parseResult) return;
-    const updated = parseNcToFrames(code, mode);
-    setFrames(updated);
-    setCurrentFrame((prev) => {
-      if (!updated.length) return prev;
-      if (!prev) return updated[0];
-      return frameForLine(updated, prev.lineNumber) ?? updated[Math.max(0, Math.min(updated.length - 1, prev.index ?? 0))];
-    });
-    updatePlayProgress(Math.max(0, Math.min(updated.length - 1, playProgressRef.current)), true);
-    setStatus(`${t("mode")}: ${mode === "laser" ? t("modeLaser") : t("modeNormal")}`);
-  };
-
   const fileMenu = (
     <div className="menu-group">
       <button className="menu-btn" onClick={() => void openNcFileByDialog()}><FileUp size={14} />{t("openNc")}</button>
@@ -1301,11 +1321,11 @@ function App() {
           <button className="menu-btn" onClick={() => setShowShortcutModal(true)}>
             <Keyboard size={14} />{t("shortcuts")}
           </button>
-          <label><Drill size={13} />{t("mode")}</label>
-          <select value={ncMode} onChange={(e) => changeNcMode(e.target.value as NcMode)}>
-            <option value="normal">{t("modeNormal")}</option>
-            <option value="laser">{t("modeLaser")}</option>
-          </select>
+          <div className="menu-mode-readonly">
+            <Drill size={13} />
+            <span>{t("mode")}:</span>
+            <b>{ncMode === "laser" ? t("modeLaser") : t("modeNormal")}</b>
+          </div>
           <label><Languages size={13} />{t("language")}</label>
           <select value={i18n.language} onChange={(e) => void changeLocale(e.target.value)}>
             <option value="zh-CN">中文</option>

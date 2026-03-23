@@ -121,14 +121,21 @@ function resolveUpVector(position: Vec3Like, target: Vec3Like): Vector3 {
 function FocusSegment({
   points,
   lineWidth,
-  isPlunge,
 }: {
   points: Vector3[] | null;
   lineWidth: number;
-  isPlunge: boolean;
 }) {
   if (!points || points.length < 2) return null;
-  return <Line points={points} color={isPlunge ? "#facc15" : "#ff4d4f"} lineWidth={lineWidth} segments />;
+  return (
+    <Line
+      points={points}
+      color="#ff4d4f"
+      lineWidth={lineWidth}
+      segments
+      depthTest={false}
+      renderOrder={999}
+    />
+  );
 }
 
 function ToolPoint({
@@ -443,6 +450,7 @@ export function Viewer3D({
   onFrameHover,
   onFrameHoverEnd,
   onViewerHotkeyScopeChange,
+  onCameraStateChange,
   theme,
   interactionMode,
   showGrid,
@@ -458,6 +466,7 @@ export function Viewer3D({
   onFrameHover?: (frame: FrameState) => void;
   onFrameHoverEnd?: () => void;
   onViewerHotkeyScopeChange?: (active: boolean) => void;
+  onCameraStateChange?: (state: CameraState) => void;
   theme: "light" | "navy" | "dark";
   interactionMode: "pan" | "rotate";
   showGrid: boolean;
@@ -469,6 +478,7 @@ export function Viewer3D({
   const [isPointerDown, setIsPointerDown] = useState(false);
   const [isPickTargetHovered, setIsPickTargetHovered] = useState(false);
   const [hoverTooltip, setHoverTooltip] = useState<HoverTooltipData | null>(null);
+  const [pickedSegment, setPickedSegment] = useState<SegmentRecord | null>(null);
   const hoverDelayRef = useRef<number | null>(null);
   const adaptiveFactor = useMemo(() => {
     const n = frames.length;
@@ -493,11 +503,44 @@ export function Viewer3D({
     const rapidPoints: Vector3[] = [];
     const cutSegments: SegmentRecord[] = [];
     const rapidSegments: SegmentRecord[] = [];
+    const lastByDomain: Record<"xyz" | "uvw", Vec3Like | null> = {
+      xyz: null,
+      uvw: null,
+    };
+    const explicitWByLine = new Map<number, number>();
+    for (let i = 0; i < codeLines.length; i += 1) {
+      const raw = codeLines[i];
+      if (!raw) continue;
+      const clean = raw.replace(/\([^)]*\)/g, "").replace(/;.*$/g, "").toUpperCase();
+      const matches = [...clean.matchAll(/\bW([+-]?\d+(?:\.\d+)?)\b/g)];
+      if (!matches.length) continue;
+      const last = matches[matches.length - 1];
+      const value = Number(last[1]);
+      if (Number.isFinite(value)) explicitWByLine.set(i + 1, value);
+    }
+    // Build modal W table (same semantics as NC axes: omitted word keeps previous value).
+    const modalWByLine = new Map<number, number>();
+    let modalW: number | null = null;
+    for (let line = 1; line <= codeLines.length; line += 1) {
+      const explicit = explicitWByLine.get(line);
+      if (explicit !== undefined) modalW = explicit;
+      if (modalW !== null) modalWByLine.set(line, modalW);
+    }
+    let lastWValue: number | null = null;
 
     for (let i = 1; i < frames.length; i += 1) {
       const a = frames[i - 1];
       const b = frames[i];
-      const isPlunge = b.position.z < a.position.z - 1e-6;
+      const domain = b.axisDomain ?? "xyz";
+      const plungeBase = lastByDomain[domain] ?? a.position;
+      // Domain-local plunge classification:
+      // - XYZ (front): Z decreasing means tool goes down.
+      // - UVW (back side): enforce user's W-rule strictly: W2 < W1 means plunge.
+      const currentW = modalWByLine.get(b.lineNumber);
+      const prevW = modalWByLine.get(a.lineNumber) ?? lastWValue;
+      const isPlunge = domain === "uvw"
+        ? (currentW !== undefined && prevW !== null && prevW !== undefined && currentW < prevW - 1e-6)
+        : b.position.z < plungeBase.z - 1e-6;
       if (b.motion === "Rapid") {
         const seg: SegmentRecord = {
           start: a.position,
@@ -509,6 +552,20 @@ export function Viewer3D({
         rapidSegments.push(seg);
         rapidPoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
         rapidPoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+        // Laser (UVW->Z mapped) can perform plunge on rapid moves too.
+        // Keep plunge highlighting consistent with front-side yellow segments.
+        if (isPlunge) {
+          plungePoints.push(new Vector3(plungeBase.x, plungeBase.y, plungeBase.z));
+          plungePoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+          // Keep plunge segments pickable even when rapid-path display is hidden.
+          cutSegments.push({
+            start: plungeBase,
+            end: b.position,
+            endFrame: b,
+            sourceIndex: cutSegments.length,
+            lane: "cut",
+          });
+        }
       } else {
         const seg: SegmentRecord = {
           start: a.position,
@@ -523,21 +580,23 @@ export function Viewer3D({
           uvwPoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
           if (isPlunge) {
             // Laser-integrated (UVW) plunge segments should also be highlighted in yellow.
-            plungePoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
+            plungePoints.push(new Vector3(plungeBase.x, plungeBase.y, plungeBase.z));
             plungePoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
           }
         } else if (isPlunge) {
-          plungePoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
+          plungePoints.push(new Vector3(plungeBase.x, plungeBase.y, plungeBase.z));
           plungePoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
         } else {
           cutPoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
           cutPoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
         }
       }
+      if (domain === "uvw" && currentW !== undefined) lastWValue = currentW;
+      lastByDomain[domain] = b.position;
     }
 
     return { cutPoints, uvwPoints, plungePoints, rapidPoints, cutSegments, rapidSegments };
-  }, [frames]);
+  }, [codeLines, frames]);
   const pickCutSegments = useMemo(
     () => sampleSegments(segmentData.cutSegments, scaledCount(9000, 1800)),
     [scaledCount, segmentData.cutSegments],
@@ -612,6 +671,16 @@ export function Viewer3D({
 
   const focusSegment = useMemo(() => {
     if (!markerFrame || frames.length < 2) return null;
+    if (
+      pickedSegment &&
+      pickedSegment.endFrame.index === markerFrame.index &&
+      pickedSegment.endFrame.lineNumber === markerFrame.lineNumber
+    ) {
+      return [
+        new Vector3(pickedSegment.start.x, pickedSegment.start.y, pickedSegment.start.z),
+        new Vector3(pickedSegment.end.x, pickedSegment.end.y, pickedSegment.end.z),
+      ];
+    }
     const markerIdx = typeof markerFrame.index === "number"
       ? Math.max(0, Math.min(frames.length - 1, markerFrame.index))
       : Math.max(0, frames.findIndex((f) => f.lineNumber === markerFrame.lineNumber));
@@ -629,6 +698,22 @@ export function Viewer3D({
     const exact = markerIdx > 0 ? makeSeg(markerIdx - 1, markerIdx) : makeSeg(0, 1);
     if (exact) return exact;
 
+    // Editor-driven sync: prefer a real segment from the same NC line.
+    const line = markerFrame.lineNumber;
+    let bestSameLine: Vector3[] | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (let i = 1; i < frames.length; i += 1) {
+      if (frames[i].lineNumber !== line) continue;
+      const seg = makeSeg(i - 1, i);
+      if (!seg) continue;
+      const score = Math.abs(i - markerIdx);
+      if (score < bestScore) {
+        bestScore = score;
+        bestSameLine = seg;
+      }
+    }
+    if (bestSameLine) return bestSameLine;
+
     // If current frame is degenerate, walk neighbors to find nearest visible segment.
     for (let d = 1; d < Math.min(60, frames.length); d += 1) {
       const left = markerIdx - d;
@@ -640,22 +725,18 @@ export function Viewer3D({
     }
 
     // Last fallback: aggregate all segments for current line (for interpolated arc lines).
-    const line = markerFrame.lineNumber;
+    const fallbackLine = markerFrame.lineNumber;
     const all: Vector3[] = [];
     for (let i = 1; i < frames.length; i += 1) {
-      if (frames[i].lineNumber !== line) continue;
+      if (frames[i].lineNumber !== fallbackLine) continue;
       const seg = makeSeg(i - 1, i);
       if (!seg) continue;
       all.push(seg[0], seg[1]);
     }
     return all.length > 1 ? all : null;
-  }, [markerFrame, frames]);
+  }, [markerFrame, frames, pickedSegment]);
 
   const focusWidth = markerFrame?.motion === "Rapid" ? 1.2 : 1.8;
-  const focusIsPlunge = useMemo(() => {
-    if (!focusSegment || focusSegment.length < 2) return false;
-    return focusSegment[1].z < focusSegment[0].z - 1e-6;
-  }, [focusSegment]);
   const hoverInfo = useMemo(() => {
     if (!hoverTooltip) return null;
     const seg = hoverTooltip.segment;
@@ -705,6 +786,14 @@ export function Viewer3D({
   }, []);
 
   useEffect(() => {
+    if (!pickedSegment || !currentFrame) return;
+    const sameFrame =
+      pickedSegment.endFrame.index === currentFrame.index &&
+      pickedSegment.endFrame.lineNumber === currentFrame.lineNumber;
+    if (!sameFrame) setPickedSegment(null);
+  }, [currentFrame, pickedSegment]);
+
+  useEffect(() => {
     if (!cameraState || !controlsRef.current) return;
     controlsRef.current.minDistance = Math.max(8, sceneScale * 0.03);
     controlsRef.current.maxDistance = Math.max(400, sceneScale * 10);
@@ -735,6 +824,16 @@ export function Viewer3D({
     controlsRef.current.object.updateProjectionMatrix();
     controlsRef.current.update();
   }, [cameraState, geometryCenter, frames.length, sceneScale]);
+
+  const cameraEmitRafRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (cameraEmitRafRef.current !== null) {
+        window.cancelAnimationFrame(cameraEmitRafRef.current);
+        cameraEmitRafRef.current = null;
+      }
+    };
+  }, []);
 
   const isLight = theme === "light";
   const isNavy = theme === "navy";
@@ -807,12 +906,6 @@ export function Viewer3D({
         <ViewportCenterOnResize controlsRef={controlsRef} sceneRadius={sceneScale * 0.5} enabled={frames.length > 1} />
         <group>
           {renderCutPoints.length > 1 && <Line points={renderCutPoints} color={lineColor} lineWidth={1.8} segments />}
-          {renderPlungePoints.length > 1 && (
-            <Line points={renderPlungePoints} color="#facc15" lineWidth={1.8} segments />
-          )}
-          {renderUvwPoints.length > 1 && (
-            <Line points={renderUvwPoints} color="#a855f7" lineWidth={1.8} segments />
-          )}
           {showRapidPath && renderRapidPoints.length > 1 && (
             <Line
               points={renderRapidPoints}
@@ -824,8 +917,14 @@ export function Viewer3D({
               gapSize={0.9}
             />
           )}
+          {renderUvwPoints.length > 1 && (
+            <Line points={renderUvwPoints} color="#a855f7" lineWidth={1.8} segments />
+          )}
+          {renderPlungePoints.length > 1 && (
+            <Line points={renderPlungePoints} color="#facc15" lineWidth={1.8} segments />
+          )}
 
-          <FocusSegment points={focusSegment} lineWidth={focusWidth} isPlunge={focusIsPlunge} />
+          <FocusSegment points={focusSegment} lineWidth={focusWidth} />
           <ToolPoint segment={focusSegment} sceneScale={sceneScale} />
         </group>
         <RayPickController
@@ -842,6 +941,7 @@ export function Viewer3D({
             queueHoverTooltip(seg, x, y);
           }}
           onPickSegment={(seg, x, y) => {
+            setPickedSegment(seg);
             onFramePick?.(seg.endFrame);
             if (showPathTooltip) setHoverTooltip({ segment: seg, x, y });
           }}
@@ -869,6 +969,29 @@ export function Viewer3D({
           maxAzimuthAngle={Infinity}
           screenSpacePanning
           mouseButtons={{ LEFT: MOUSE.PAN, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.ROTATE }}
+          onChange={() => {
+            if (!onCameraStateChange || !controlsRef.current) return;
+            if (cameraEmitRafRef.current !== null) return;
+            cameraEmitRafRef.current = window.requestAnimationFrame(() => {
+              cameraEmitRafRef.current = null;
+              const controls = controlsRef.current;
+              if (!controls) return;
+              onCameraStateChange({
+                target: {
+                  x: controls.target.x,
+                  y: controls.target.y,
+                  z: controls.target.z,
+                },
+                position: {
+                  x: controls.object.position.x,
+                  y: controls.object.position.y,
+                  z: controls.object.position.z,
+                },
+                zoom: 1,
+                viewName: cameraState?.viewName ?? "Custom",
+              });
+            });
+          }}
         />
       </Canvas>
       {showPathTooltip && hoverTooltip && hoverInfo && (
