@@ -168,19 +168,22 @@ function fitDistanceForView(frames: FrameState[], viewName: string): number {
   const hFovConservative = 2 * Math.atan(Math.tan(vFov / 2) * assumedMinAspect);
   const minHalfFov = Math.max(0.08, Math.min(vFov / 2, hFovConservative / 2));
   const dSphere = radius / Math.sin(minHalfFov);
-  const invTan = 1 / Math.tan(vFov / 2);
+  const invTanV = 1 / Math.tan(vFov / 2);
+  const invTanH = 1 / Math.tan(hFovConservative / 2);
   const m = 1.16; // fuller fit with minimal margin
+  const fitPlane = (width: number, height: number) =>
+    Math.max(width * 0.5 * invTanH, height * 0.5 * invTanV) * m;
 
   if (viewName === "Top" || viewName === "Bottom") {
-    return Math.max(120, Math.max(sx, sy) * 0.5 * invTan * m);
+    return Math.max(120, fitPlane(sx, sy));
   }
   if (viewName === "Front") {
-    return Math.max(120, Math.max(sx, sz) * 0.5 * invTan * m);
+    return Math.max(120, fitPlane(sx, sz));
   }
   if (viewName === "Left" || viewName === "Right") {
-    return Math.max(120, Math.max(sy, sz) * 0.5 * invTan * m);
+    return Math.max(120, fitPlane(sy, sz));
   }
-  return Math.max(120, Math.max(radius * invTan * m, dSphere * 1.15));
+  return Math.max(120, Math.max(radius * invTanV * m, dSphere * 1.15));
 }
 
 function cameraForView(frames: FrameState[], viewName: string): CameraState {
@@ -383,6 +386,10 @@ function App() {
   );
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
+  const viewMenuRef = useRef<HTMLDetailsElement | null>(null);
+  const topChromeRef = useRef<HTMLDivElement | null>(null);
+  const saveCurrentFileRef = useRef<(() => Promise<boolean>) | null>(null);
+  const saveAsCurrentFileRef = useRef<(() => Promise<boolean>) | null>(null);
   const editorCursorListenerRef = useRef<Monaco.IDisposable | null>(null);
   const decoRef = useRef<string[]>([]);
   const parseDebounceRef = useRef<number | null>(null);
@@ -500,11 +507,13 @@ function App() {
   });
   const [ncMode, setNcMode] = useState<NcMode>("normal");
   const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const dragState = useRef<{ pane: "files" | "editor"; startX: number; startWidth: number } | null>(null);
 
   const resolvedTheme: "light" | "navy" | "dark" = themeMode === "system"
     ? (systemDark ? "dark" : "light")
     : (themeMode === "xdark" ? "dark" : themeMode);
+  const currentLocale = i18n.resolvedLanguage === "zh-CN" || i18n.language === "zh-CN" ? "zh-CN" : "en-US";
   const hasUnsavedChanges = Boolean(loadedProgram) && code !== lastSavedContent;
   const visiblePaneCount = [showFiles, showEditor, showViewer].filter(Boolean).length;
   const speedOptions: Array<{ value: SpeedMode; label: string }> = [
@@ -513,11 +522,20 @@ function App() {
     { value: "High", label: t("speedHigh") },
   ];
   const shortcutItems: Array<{ id: ShortcutId; label: string }> = [
+    { id: "openShortcuts", label: t("openShortcuts") },
+    { id: "openNc", label: t("shortcutOpenNc") },
+    { id: "saveFile", label: t("shortcutSaveFile") },
+    { id: "saveFileAs", label: t("shortcutSaveFileAs") },
     { id: "toggleFiles", label: t("toggleFiles") },
     { id: "toggleEditor", label: t("toggleEditor") },
     { id: "toggleViewer", label: t("toggleViewer") },
     { id: "toggleImmersiveViewer", label: t("toggleImmersiveViewer") },
     { id: "refocus", label: t("refocus") },
+    { id: "viewTop", label: t("shortcutViewTop") },
+    { id: "viewFront", label: t("shortcutViewFront") },
+    { id: "viewLeft", label: t("shortcutViewLeft") },
+    { id: "viewRight", label: t("shortcutViewRight") },
+    { id: "viewBottom", label: t("shortcutViewBottom") },
     { id: "panMode", label: t("panMode") },
     { id: "rotateMode", label: t("rotateMode") },
     { id: "zoomIn", label: t("zoomIn") },
@@ -525,6 +543,7 @@ function App() {
     { id: "toggleGrid", label: t("toggleGrid") },
     { id: "toggleGizmo", label: t("toggleGizmo") },
     { id: "toggleRapidPath", label: t("hideRapidPath") },
+    { id: "togglePathTooltip", label: t("shortcutToggleLegend") },
     { id: "pathPrev", label: t("stepPrev") },
     { id: "pathNext", label: t("stepNext") },
   ];
@@ -534,11 +553,13 @@ function App() {
   );
   const shortcutGroups = useMemo(() => {
     const descriptions = {
+      file: t("shortcutGroupFileDesc"),
       panels: t("shortcutGroupPanelsDesc"),
       viewer: t("shortcutGroupViewerDesc"),
       path: t("shortcutGroupPathDesc"),
     } as const;
     const titles = {
+      file: t("shortcutGroupFile"),
       panels: t("shortcutGroupPanels"),
       viewer: t("shortcutGroupViewer"),
       path: t("shortcutGroupPath"),
@@ -590,7 +611,7 @@ function App() {
     const sorted = filtered.sort((a, b) => {
       const byNameAsc = a.fileName.localeCompare(
         b.fileName,
-        i18n.language === "zh-CN" ? "zh-CN" : "en-US",
+        currentLocale,
         { numeric: true },
       );
       let result = 0;
@@ -613,7 +634,7 @@ function App() {
     });
 
     return sorted;
-  }, [fileSearch, filesInFolder, fileSortField, fileSortOrder, i18n.language]);
+  }, [currentLocale, fileSearch, filesInFolder, fileSortField, fileSortOrder]);
   const visibleRecentFiles = useMemo(() => {
     const keyword = fileSearch.trim().toLowerCase();
     const filtered = keyword
@@ -692,10 +713,13 @@ function App() {
   }, [recentFiles, selectedFilePath]);
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_LANG_KEY);
-    if (saved && saved !== i18n.language) {
+    if (saved && saved !== currentLocale) {
       void i18n.changeLanguage(saved);
     }
-  }, [i18n]);
+    // Restore persisted locale only once on startup.
+    // Re-running this effect on every locale change can revert the user's latest selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!monacoRef.current) return;
@@ -725,13 +749,30 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    const immersivePaneCap = Math.max(280, Math.floor((viewportWidth - 180) / 3));
     const onMove = (e: PointerEvent) => {
       if (!dragState.current) return;
       const diff = e.clientX - dragState.current.startX;
       if (dragState.current.pane === "files") {
-        setFilesWidth(Math.max(160, Math.min(600, dragState.current.startWidth + diff)));
+        const nextWidth = dragState.current.startWidth + diff;
+        setFilesWidth(
+          immersiveViewer
+            ? Math.max(Math.min(280, Math.min(520, immersivePaneCap)), Math.min(Math.min(520, immersivePaneCap), nextWidth))
+            : Math.max(160, Math.min(600, nextWidth)),
+        );
       } else {
-        setEditorWidth(Math.max(320, Math.min(1400, dragState.current.startWidth + diff)));
+        const nextWidth = dragState.current.startWidth + diff;
+        setEditorWidth(
+          immersiveViewer
+            ? Math.max(Math.min(360, Math.min(680, immersivePaneCap)), Math.min(Math.min(680, immersivePaneCap), nextWidth))
+            : Math.max(320, Math.min(1400, nextWidth)),
+        );
       }
     };
     const onUp = () => {
@@ -745,7 +786,7 @@ function App() {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, []);
+  }, [immersiveViewer, viewportWidth]);
 
   const openViewerPane = useCallback(() => {
     suppressCameraFeedbackUntilRef.current = performance.now() + 480;
@@ -1069,7 +1110,7 @@ function App() {
     });
     observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
     return () => observer.disconnect();
-  }, [editorReady, i18n.language, localizeMonacoFindWidget]);
+  }, [currentLocale, editorReady, localizeMonacoFindWidget]);
 
   const startSimulation = async () => {
     if (!frames.length) return;
@@ -1184,6 +1225,11 @@ function App() {
     }
   }, [currentFrame?.position, frames]);
 
+  const applyView = useCallback((name: string) => {
+    viewMenuRef.current?.removeAttribute("open");
+    void setView(name);
+  }, [setView]);
+
   const requestViewerZoom = useCallback((scale: number) => {
     setViewerZoomRequest((prev) => ({ nonce: prev.nonce + 1, scale }));
   }, []);
@@ -1202,9 +1248,30 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (recordingShortcutId) return;
       const key = e.key.toLowerCase();
+      if (showShortcutModal && key === "escape") {
+        e.preventDefault();
+        setRecordingShortcutId(null);
+        setShowShortcutModal(false);
+        return;
+      }
+      if (recordingShortcutId) return;
       const pressed = keyboardEventToShortcut(e);
+      if (pressed === shortcuts.openNc) {
+        e.preventDefault();
+        void openNcFileByDialog();
+        return;
+      }
+      if (pressed === shortcuts.saveFile) {
+        e.preventDefault();
+        void saveCurrentFileRef.current?.();
+        return;
+      }
+      if (pressed === shortcuts.saveFileAs) {
+        e.preventDefault();
+        void saveAsCurrentFileRef.current?.();
+        return;
+      }
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       const inEditor = Boolean(
@@ -1217,6 +1284,12 @@ function App() {
       if (pressed === shortcuts.toggleFiles) {
         e.preventDefault();
         toggleFilesPane();
+        return;
+      }
+      if (pressed === shortcuts.openShortcuts) {
+        e.preventDefault();
+        setShowShortcutModal((prev) => !prev);
+        setRecordingShortcutId(null);
         return;
       }
       if (pressed === shortcuts.toggleEditor) {
@@ -1235,22 +1308,29 @@ function App() {
         return;
       }
       if (key === "escape") {
+        if (viewerHotkeyScope) {
+          e.preventDefault();
+          setIsPlaying(false);
+          setHoverFrame(null);
+          setPathNavActive(false);
+          setCurrentFrame(null);
+          return;
+        }
         if (immersiveViewer) {
           e.preventDefault();
           setImmersiveTopChromeVisible(false);
           return;
         }
-        if (!viewerHotkeyScope) return;
-        e.preventDefault();
-        setIsPlaying(false);
-        setHoverFrame(null);
-        setPathNavActive(false);
-        setCurrentFrame(null);
         return;
       }
 
       const is3DAction = [
         shortcuts.refocus,
+        shortcuts.viewTop,
+        shortcuts.viewFront,
+        shortcuts.viewLeft,
+        shortcuts.viewRight,
+        shortcuts.viewBottom,
         shortcuts.panMode,
         shortcuts.rotateMode,
         shortcuts.zoomIn,
@@ -1258,6 +1338,7 @@ function App() {
         shortcuts.toggleGrid,
         shortcuts.toggleGizmo,
         shortcuts.toggleRapidPath,
+        shortcuts.togglePathTooltip,
         shortcuts.toggleImmersiveViewer,
         shortcuts.pathPrev,
         shortcuts.pathNext,
@@ -1268,6 +1349,31 @@ function App() {
       if (pressed === shortcuts.refocus || (!e.ctrlKey && !e.altKey && !e.metaKey && key === "f")) {
         e.preventDefault();
         refocusCenter();
+        return;
+      }
+      if (pressed === shortcuts.viewTop) {
+        e.preventDefault();
+        applyView("Top");
+        return;
+      }
+      if (pressed === shortcuts.viewFront) {
+        e.preventDefault();
+        applyView("Front");
+        return;
+      }
+      if (pressed === shortcuts.viewLeft) {
+        e.preventDefault();
+        applyView("Left");
+        return;
+      }
+      if (pressed === shortcuts.viewRight) {
+        e.preventDefault();
+        applyView("Right");
+        return;
+      }
+      if (pressed === shortcuts.viewBottom) {
+        e.preventDefault();
+        applyView("Bottom");
         return;
       }
       if (pressed === shortcuts.panMode) {
@@ -1305,6 +1411,11 @@ function App() {
         setShowRapidPath((v) => !v);
         return;
       }
+      if (pressed === shortcuts.togglePathTooltip) {
+        e.preventDefault();
+        setShowPathTooltip((v) => !v);
+        return;
+      }
       if (!pathNavActive || !currentFrame) return;
       if (pressed === shortcuts.pathPrev) {
         e.preventDefault();
@@ -1320,6 +1431,7 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     recordingShortcutId,
+    showShortcutModal,
     currentFrame,
     pathNavActive,
     refocusCenter,
@@ -1332,6 +1444,7 @@ function App() {
     viewerHotkeyScope,
     immersiveViewer,
     requestViewerZoom,
+    applyView,
   ]);
 
   const onShortcutRecorderKeyDown = useCallback((id: ShortcutId, e: ReactKeyboardEvent<HTMLButtonElement>) => {
@@ -1422,6 +1535,20 @@ function App() {
   }, [activeFile, loadedProgram, saveAsCurrentFile, saveToPath]);
 
   useEffect(() => {
+    saveCurrentFileRef.current = saveCurrentFile;
+    saveAsCurrentFileRef.current = saveAsCurrentFile;
+  }, [saveAsCurrentFile, saveCurrentFile]);
+
+  useEffect(() => {
+    if (!immersiveViewer || immersiveTopChromeVisible) return;
+    viewMenuRef.current?.removeAttribute("open");
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && topChromeRef.current?.contains(active)) {
+      active.blur();
+    }
+  }, [immersiveTopChromeVisible, immersiveViewer]);
+
+  useEffect(() => {
     if (!inTauriRuntime()) return;
     const appWindow = getCurrentWindow();
     let unlisten: (() => void) | null = null;
@@ -1475,6 +1602,7 @@ function App() {
   };
 
   const changeLocale = async (locale: string) => {
+    if (locale === currentLocale) return;
     await i18n.changeLanguage(locale);
     localStorage.setItem(STORAGE_LANG_KEY, locale);
     await invoke("set_locale", { locale });
@@ -1482,13 +1610,22 @@ function App() {
   const showImmersiveFilesPane = immersiveViewer || showFiles;
   const showImmersiveEditorPane = immersiveViewer || showEditor;
   const showImmersiveViewerPane = immersiveViewer || showViewer;
+  const immersivePaneCap = Math.max(280, Math.floor((viewportWidth - 180) / 3));
+  const immersiveFilesWidth = Math.max(
+    Math.min(280, Math.min(520, immersivePaneCap)),
+    Math.min(Math.min(520, immersivePaneCap), filesWidth),
+  );
+  const immersiveEditorWidth = Math.max(
+    Math.min(360, Math.min(680, immersivePaneCap)),
+    Math.min(Math.min(680, immersivePaneCap), editorWidth),
+  );
   const immersiveFilePaneStyle: CSSProperties = immersiveViewer
-    ? { width: `${Math.max(280, Math.min(520, filesWidth))}px` }
+    ? { width: `${immersiveFilesWidth}px`, maxWidth: `min(${immersiveFilesWidth}px, 33vw)` }
     : ((showEditor || showViewer)
       ? { flex: `0 1 ${filesWidth}px`, maxWidth: `${filesWidth}px` }
       : { flex: "1 1 auto" });
   const immersiveEditorPaneStyle: CSSProperties = immersiveViewer
-    ? { width: `${Math.max(360, Math.min(680, editorWidth))}px` }
+    ? { width: `${immersiveEditorWidth}px`, maxWidth: `min(${immersiveEditorWidth}px, 33vw)` }
     : (showViewer
       ? { flex: `0 1 ${editorWidth}px`, maxWidth: `${editorWidth}px` }
       : { flex: "1 1 auto" });
@@ -1498,8 +1635,8 @@ function App() {
         immersiveViewer,
         showFiles,
         showEditor,
-        filesWidth,
-        editorWidth,
+        filesWidth: immersiveFilesWidth,
+        editorWidth: immersiveEditorWidth,
       })}px`,
     }
     : undefined;
@@ -1511,22 +1648,32 @@ function App() {
           immersiveViewer,
           showFiles,
           showEditor,
-          filesWidth,
-          editorWidth,
+          filesWidth: immersiveFilesWidth,
+          editorWidth: immersiveEditorWidth,
         }) + 64,
       )}px`,
       "--immersive-top-right-safe": "84px",
     }
     : undefined;
-  const immersiveViewerShortcutHint = displayShortcut(shortcuts.toggleImmersiveViewer);
-  const filesShortcutHint = displayShortcut(shortcuts.toggleFiles);
-  const editorShortcutHint = displayShortcut(shortcuts.toggleEditor);
-  const viewerShortcutHint = displayShortcut(shortcuts.toggleViewer);
+  const shortcutButtonTooltip = tooltipWithShortcut(t("shortcuts"), shortcuts.openShortcuts);
+  const filesButtonTooltip = tooltipWithShortcut(t("toggleFiles"), shortcuts.toggleFiles);
+  const editorButtonTooltip = tooltipWithShortcut(t("toggleEditor"), shortcuts.toggleEditor);
+  const viewerButtonTooltip = tooltipWithShortcut(t("toggleViewer"), shortcuts.toggleViewer);
+  const immersiveViewerTooltip = tooltipWithShortcut(
+    immersiveViewer ? t("exitImmersiveViewer") : t("enterImmersiveViewer"),
+    shortcuts.toggleImmersiveViewer,
+  );
+  const immersiveFilesSplitterStyle: CSSProperties | undefined = immersiveViewer && showFiles
+    ? { left: `${immersiveFilesWidth}px` }
+    : undefined;
+  const immersiveEditorSplitterStyle: CSSProperties | undefined = immersiveViewer && showEditor
+    ? { left: `${immersiveEditorWidth}px` }
+    : undefined;
   const fileMenu = (
     <div className="menu-group">
-      <button className="menu-btn" onClick={() => void openNcFileByDialog()}><FileUp size={14} />{t("openNc")}</button>
-      <button className="menu-btn" onClick={() => void saveCurrentFile()}><Save size={14} />{t("save")}</button>
-      <button className="menu-btn" onClick={() => void saveAsCurrentFile()}><SaveAll size={14} />{t("saveAs")}</button>
+      <button className="menu-btn" data-ui-tooltip={tooltipWithShortcut(t("openNc"), shortcuts.openNc)} onClick={() => void openNcFileByDialog()}><FileUp size={14} />{t("openNc")}</button>
+      <button className="menu-btn" data-ui-tooltip={tooltipWithShortcut(t("save"), shortcuts.saveFile)} onClick={() => void saveCurrentFile()}><Save size={14} />{t("save")}</button>
+      <button className="menu-btn" data-ui-tooltip={tooltipWithShortcut(t("saveAs"), shortcuts.saveFileAs)} onClick={() => void saveAsCurrentFile()}><SaveAll size={14} />{t("saveAs")}</button>
     </div>
   );
 
@@ -1540,6 +1687,7 @@ function App() {
       )}
       <div
         className={`top-chrome${immersiveViewer ? " immersive" : ""}${immersiveTopChromeVisible ? " visible" : ""}`}
+        ref={topChromeRef}
         style={immersiveTopChromeStyle}
         onMouseEnter={() => immersiveViewer && setImmersiveTopChromeVisible(true)}
         onMouseLeave={() => immersiveViewer && setImmersiveTopChromeVisible(false)}
@@ -1550,7 +1698,7 @@ function App() {
             <div className="menu-tag">{folderPath || t("noFolder")}</div>
           </div>
           <div className="menu-right">
-            <button className="menu-btn" onClick={() => setShowShortcutModal(true)}>
+            <button className="menu-btn" data-ui-tooltip={shortcutButtonTooltip} onClick={() => setShowShortcutModal(true)}>
               <Keyboard size={14} />{t("shortcuts")}
             </button>
             <div className="menu-mode-readonly">
@@ -1558,31 +1706,35 @@ function App() {
               <span>{t("mode")}:</span>
               <b>{ncMode === "laser" ? t("modeLaser") : t("modeNormal")}</b>
             </div>
-            <label><Languages size={13} />{t("language")}</label>
-            <select value={i18n.language} onChange={(e) => void changeLocale(e.target.value)}>
-              <option value="zh-CN">中文</option>
-              <option value="en-US">English</option>
-            </select>
-            <label>{resolvedTheme === "light" ? <Sun size={13} /> : <Moon size={13} />}{t("theme")}</label>
-            <select value={themeMode} onChange={(e) => setThemeMode(e.target.value as ThemeMode)}>
-              <option value="system">{t("themeSystem")}</option>
-              <option value="navy">{t("themeNavy")}</option>
-              <option value="xdark">{t("themeDark")}</option>
-              <option value="light">{t("themeLight")}</option>
-            </select>
+            <div className="menu-inline-control">
+              <label><Languages size={13} />{t("language")}</label>
+              <select value={currentLocale} onChange={(e) => void changeLocale(e.target.value)}>
+                <option value="zh-CN">中文</option>
+                <option value="en-US">English</option>
+              </select>
+            </div>
+            <div className="menu-inline-control">
+              <label>{resolvedTheme === "light" ? <Sun size={13} /> : <Moon size={13} />}{t("theme")}</label>
+              <select value={themeMode} onChange={(e) => setThemeMode(e.target.value as ThemeMode)}>
+                <option value="system">{t("themeSystem")}</option>
+                <option value="navy">{t("themeNavy")}</option>
+                <option value="xdark">{t("themeDark")}</option>
+                <option value="light">{t("themeLight")}</option>
+              </select>
+            </div>
           </div>
         </div>
 
         <div className="tool-bar">
           <div className="tool-left tool-cluster">
-            <button className="icon-btn" onClick={() => void startSimulation()} title={t("resetSim")} aria-label={t("resetSim")}>
+            <button className="icon-btn" onClick={() => void startSimulation()} data-ui-tooltip={t("resetSim")} aria-label={t("resetSim")}>
               <RotateCcw size={14} />
             </button>
-            <button className="icon-btn" onClick={togglePlay} title={isPlaying ? t("pause") : t("play")} aria-label={isPlaying ? t("pause") : t("play")}>
+            <button className="icon-btn" onClick={togglePlay} data-ui-tooltip={isPlaying ? t("pause") : t("play")} aria-label={isPlaying ? t("pause") : t("play")}>
               {isPlaying ? <Pause size={14} /> : <Play size={14} />}
             </button>
-            <button className="icon-btn" onClick={() => void step("Prev")} title={t("stepPrev")} aria-label={t("stepPrev")}><ArrowLeft size={14} /></button>
-            <button className="icon-btn" onClick={() => void step("Next")} title={t("stepNext")} aria-label={t("stepNext")}><ArrowRight size={14} /></button>
+            <button className="icon-btn" onClick={() => void step("Prev")} data-ui-tooltip={t("stepPrev")} aria-label={t("stepPrev")}><ArrowLeft size={14} /></button>
+            <button className="icon-btn" onClick={() => void step("Next")} data-ui-tooltip={t("stepNext")} aria-label={t("stepNext")}><ArrowRight size={14} /></button>
             <div className="tool-divider" />
             <select value={speed} onChange={(e) => setSpeed(e.target.value as SpeedMode)} title={t("speed")}>
               {speedOptions.map((opt) => (
@@ -1591,23 +1743,23 @@ function App() {
             </select>
           </div>
           <div className="tool-right tool-cluster">
-            <button className="icon-btn" title={tooltipWithShortcut(t("refocus"), shortcuts.refocus)} onClick={refocusCenter}><LocateFixed size={14} /></button>
+            <button className="icon-btn" data-ui-tooltip={tooltipWithShortcut(t("refocus"), shortcuts.refocus)} onClick={refocusCenter}><LocateFixed size={14} /></button>
             <div className="tool-divider" />
-            <details className="view-menu">
-              <summary className="menu-btn icon-btn" title={tooltipWithShortcut(t("viewPresets"), "V")}>
+            <details className="view-menu" ref={viewMenuRef}>
+              <summary className="menu-btn icon-btn" data-ui-tooltip={t("viewPresets")}>
                 <Compass size={14} />
               </summary>
               <div className="view-menu-list">
-                <button onClick={() => void setView("Top")}><ArrowUp size={14} />{t("top")}</button>
-                <button onClick={() => void setView("Front")}><Compass size={14} />{t("front")}</button>
-                <button onClick={() => void setView("Left")}><ArrowLeft size={14} />{t("left")}</button>
-                <button onClick={() => void setView("Right")}><ArrowRight size={14} />{t("right")}</button>
-                <button onClick={() => void setView("Bottom")}><ArrowDown size={14} />{t("bottom")}</button>
+                  <button data-ui-tooltip={tooltipWithShortcut(t("top"), shortcuts.viewTop)} onClick={() => applyView("Top")}><ArrowUp size={14} /><span>{t("top")}</span></button>
+                  <button data-ui-tooltip={tooltipWithShortcut(t("front"), shortcuts.viewFront)} onClick={() => applyView("Front")}><Compass size={14} /><span>{t("front")}</span></button>
+                  <button data-ui-tooltip={tooltipWithShortcut(t("left"), shortcuts.viewLeft)} onClick={() => applyView("Left")}><ArrowLeft size={14} /><span>{t("left")}</span></button>
+                  <button data-ui-tooltip={tooltipWithShortcut(t("right"), shortcuts.viewRight)} onClick={() => applyView("Right")}><ArrowRight size={14} /><span>{t("right")}</span></button>
+                  <button data-ui-tooltip={tooltipWithShortcut(t("bottom"), shortcuts.viewBottom)} onClick={() => applyView("Bottom")}><ArrowDown size={14} /><span>{t("bottom")}</span></button>
               </div>
             </details>
             <button
               className={interactionMode === "pan" ? "mode-btn icon-btn active" : "mode-btn icon-btn"}
-              title={tooltipWithShortcut(t("panMode"), shortcuts.panMode)}
+              data-ui-tooltip={tooltipWithShortcut(t("panMode"), shortcuts.panMode)}
               onClick={() => setInteractionMode("pan")}
               aria-label={t("panMode")}
             >
@@ -1615,40 +1767,40 @@ function App() {
             </button>
             <button
               className={interactionMode === "rotate" ? "mode-btn icon-btn active" : "mode-btn icon-btn"}
-              title={tooltipWithShortcut(t("rotateMode"), shortcuts.rotateMode)}
+              data-ui-tooltip={tooltipWithShortcut(t("rotateMode"), shortcuts.rotateMode)}
               onClick={() => setInteractionMode("rotate")}
               aria-label={t("rotateMode")}
             >
               <Rotate3d size={14} />
             </button>
             <div className="tool-divider" />
-            <button className="icon-btn" title={tooltipWithShortcut(t("zoomIn"), shortcuts.zoomIn)} onClick={() => requestViewerZoom(0.74)}><ZoomIn size={14} /></button>
-            <button className="icon-btn" title={tooltipWithShortcut(t("zoomOut"), shortcuts.zoomOut)} onClick={() => requestViewerZoom(1.35)}><ZoomOut size={14} /></button>
+            <button className="icon-btn" data-ui-tooltip={tooltipWithShortcut(t("zoomIn"), shortcuts.zoomIn)} onClick={() => requestViewerZoom(0.74)}><ZoomIn size={14} /></button>
+            <button className="icon-btn" data-ui-tooltip={tooltipWithShortcut(t("zoomOut"), shortcuts.zoomOut)} onClick={() => requestViewerZoom(1.35)}><ZoomOut size={14} /></button>
             <div className="tool-divider" />
             <button
               className="icon-btn"
-              title={tooltipWithShortcut(showGrid ? t("hideGrid") : t("showGrid"), shortcuts.toggleGrid)}
+              data-ui-tooltip={tooltipWithShortcut(showGrid ? t("hideGrid") : t("showGrid"), shortcuts.toggleGrid)}
               onClick={() => setShowGrid((v) => !v)}
             >
               <Grid3X3 size={14} />
             </button>
             <button
               className="icon-btn"
-              title={tooltipWithShortcut(showOrientationGizmo ? t("hideGizmo") : t("showGizmo"), shortcuts.toggleGizmo)}
+              data-ui-tooltip={tooltipWithShortcut(showOrientationGizmo ? t("hideGizmo") : t("showGizmo"), shortcuts.toggleGizmo)}
               onClick={() => setShowOrientationGizmo((v) => !v)}
             >
               <Compass size={14} />
             </button>
             <button
               className="icon-btn"
-              title={tooltipWithShortcut(showRapidPath ? t("hideRapidPath") : t("showRapidPath"), shortcuts.toggleRapidPath)}
+              data-ui-tooltip={tooltipWithShortcut(showRapidPath ? t("hideRapidPath") : t("showRapidPath"), shortcuts.toggleRapidPath)}
               onClick={() => setShowRapidPath((v) => !v)}
             >
               {showRapidPath ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
             <button
               className="icon-btn"
-              title={showPathTooltip ? t("hidePathTooltip") : t("showPathTooltip")}
+              data-ui-tooltip={tooltipWithShortcut(showPathTooltip ? t("hidePathTooltip") : t("showPathTooltip"), shortcuts.togglePathTooltip)}
               onClick={() => setShowPathTooltip((v) => !v)}
             >
               <BadgeInfo size={14} />
@@ -1661,24 +1813,21 @@ function App() {
         <aside className="left-sidebar" style={immersiveSidebarStyle}>
           <button
             className={showFiles ? "side-btn active" : "side-btn"}
-            title={tooltipWithShortcut(t("toggleFiles"), shortcuts.toggleFiles)}
-            data-shortcut-hint={filesShortcutHint}
+            data-ui-tooltip={filesButtonTooltip}
             onClick={toggleFilesPane}
           >
             <FolderOpen size={16} />
           </button>
           <button
             className={showEditor ? "side-btn active" : "side-btn"}
-            title={tooltipWithShortcut(t("toggleEditor"), shortcuts.toggleEditor)}
-            data-shortcut-hint={editorShortcutHint}
+            data-ui-tooltip={editorButtonTooltip}
             onClick={toggleEditorPane}
           >
             <Code2 size={16} />
           </button>
           <button
             className={showViewer ? "side-btn active" : "side-btn"}
-            title={tooltipWithShortcut(t("toggleViewer"), shortcuts.toggleViewer)}
-            data-shortcut-hint={viewerShortcutHint}
+            data-ui-tooltip={viewerButtonTooltip}
             onClick={toggleViewerPane}
           >
             <Box size={16} />
@@ -1719,11 +1868,11 @@ function App() {
                   onClick={() => {
                     void selectAndLoadFile(item.path, false).catch(() => {});
                   }}
-                  title={`${item.fileName} | ${formatFileTime(item.createdAtMs, i18n.language)} | ${formatFileSize(item.sizeBytes)}`}
+                      title={`${item.fileName} | ${formatFileTime(item.createdAtMs, currentLocale)} | ${formatFileSize(item.sizeBytes)}`}
                 >
                   <span className="file-item-name">{item.fileName}</span>
                   <span className="file-item-meta">
-                    <span className="file-item-created">{formatFileTime(item.createdAtMs, i18n.language)}</span>
+                      <span className="file-item-created">{formatFileTime(item.createdAtMs, currentLocale)}</span>
                     <span className="file-item-size">{formatFileSize(item.sizeBytes)}</span>
                   </span>
                 </button>
@@ -1740,11 +1889,11 @@ function App() {
                           setRecentFiles((prev) => prev.filter((it) => it.path !== item.path));
                         });
                       }}
-                      title={`${item.fileName} | ${t("lastOpened")}: ${formatFileTime(item.lastOpenedAtMs, i18n.language)}`}
+                      title={`${item.fileName} | ${t("lastOpened")}: ${formatFileTime(item.lastOpenedAtMs, currentLocale)}`}
                     >
                       <span className="file-item-name">{item.fileName}</span>
                       <span className="file-item-meta">
-                        <span className="file-item-created">{t("lastOpened")}: {formatFileTime(item.lastOpenedAtMs, i18n.language)}</span>
+                      <span className="file-item-created">{t("lastOpened")}: {formatFileTime(item.lastOpenedAtMs, currentLocale)}</span>
                       </span>
                     </button>
                   ))}
@@ -1755,6 +1904,14 @@ function App() {
               )}
             </div>
           </aside>
+          )}
+
+          {immersiveViewer && showFiles && (
+            <div
+              className="splitter immersive-splitter"
+              style={immersiveFilesSplitterStyle}
+              onPointerDown={(e) => startDrag(e, "files", filesWidth)}
+            />
           )}
 
           {!immersiveViewer && showFiles && (showEditor || showViewer) && (
@@ -1799,6 +1956,14 @@ function App() {
           </section>
           )}
 
+          {immersiveViewer && showEditor && (
+            <div
+              className="splitter immersive-splitter"
+              style={immersiveEditorSplitterStyle}
+              onPointerDown={(e) => startDrag(e, "editor", editorWidth)}
+            />
+          )}
+
           {!immersiveViewer && showEditor && showViewer && (
             <div className="splitter" onPointerDown={(e) => startDrag(e, "editor", editorWidth)} />
           )}
@@ -1809,8 +1974,7 @@ function App() {
             <div className={`viewer-float-actions${immersiveViewer ? " immersive" : ""}`}>
               <button
                 className={`icon-btn viewer-float-btn viewer-float-btn-halo${immersiveViewer ? " active" : ""}`}
-                title={tooltipWithShortcut(immersiveViewer ? t("exitImmersiveViewer") : t("enterImmersiveViewer"), shortcuts.toggleImmersiveViewer)}
-                data-shortcut-hint={immersiveViewerShortcutHint}
+                data-ui-tooltip={immersiveViewerTooltip}
                 onClick={toggleImmersiveViewerMode}
                 aria-label={immersiveViewer ? t("exitImmersiveViewer") : t("enterImmersiveViewer")}
               >
@@ -1919,7 +2083,7 @@ function App() {
                 <h4>{t("shortcutMapping")}</h4>
                 <p>{t("shortcutMappingDesc")}</p>
               </div>
-              <button className="modal-close-btn" onClick={() => setShowShortcutModal(false)} title={t("close")} aria-label={t("close")}>
+              <button className="modal-close-btn" onClick={() => setShowShortcutModal(false)} data-ui-tooltip={t("close")} aria-label={t("close")}>
                 <X size={14} />
               </button>
             </div>

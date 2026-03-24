@@ -1,9 +1,18 @@
 export type ShortcutId =
+  | "openShortcuts"
+  | "openNc"
+  | "saveFile"
+  | "saveFileAs"
   | "toggleFiles"
   | "toggleEditor"
   | "toggleViewer"
   | "toggleImmersiveViewer"
   | "refocus"
+  | "viewTop"
+  | "viewFront"
+  | "viewLeft"
+  | "viewRight"
+  | "viewBottom"
   | "panMode"
   | "rotateMode"
   | "zoomIn"
@@ -11,6 +20,7 @@ export type ShortcutId =
   | "toggleGrid"
   | "toggleGizmo"
   | "toggleRapidPath"
+  | "togglePathTooltip"
   | "pathPrev"
   | "pathNext";
 
@@ -25,11 +35,20 @@ export function isApplePlatform(platformLike: string | undefined): boolean {
 export function getDefaultShortcuts(platformLike?: string): ShortcutMap {
   const primary = isApplePlatform(platformLike) ? "Meta" : "Alt";
   return {
+    openShortcuts: `${primary}+K`,
+    openNc: `${primary}+O`,
+    saveFile: `${primary}+S`,
+    saveFileAs: `${primary}+Shift+S`,
     toggleFiles: `${primary}+1`,
     toggleEditor: `${primary}+2`,
     toggleViewer: `${primary}+3`,
     toggleImmersiveViewer: `${primary}+4`,
     refocus: "F",
+    viewTop: "Ctrl+1",
+    viewFront: "Ctrl+2",
+    viewLeft: "Ctrl+3",
+    viewRight: "Ctrl+4",
+    viewBottom: "Ctrl+5",
     panMode: "1",
     rotateMode: "2",
     zoomIn: "+",
@@ -37,6 +56,7 @@ export function getDefaultShortcuts(platformLike?: string): ShortcutMap {
     toggleGrid: "G",
     toggleGizmo: "O",
     toggleRapidPath: "H",
+    togglePathTooltip: "L",
     pathPrev: "ArrowUp",
     pathNext: "ArrowDown",
   };
