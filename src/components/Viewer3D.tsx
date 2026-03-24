@@ -1,20 +1,18 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Line, OrbitControls } from "@react-three/drei";
 import { Group, MOUSE, Quaternion, Raycaster, Vector2, Vector3 } from "three";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { PerspectiveCamera } from "three";
 import type { CameraState, FrameState } from "../types";
+import { resolveViewerFocusSegment } from "../lib/viewerFocusSegment";
+import { asDreiLinePoints, buildLinePointBuffer } from "../lib/viewerLinePoints";
+import { findClosestScreenSpaceSegment } from "../lib/viewerPick";
+import { areViewer3DPropsEqual, type Viewer3DProps } from "../lib/viewer3dProps";
+import { buildViewerSegmentData, type SegmentRecord } from "../lib/viewerSegments";
 
 type Vec3Like = { x: number; y: number; z: number };
-type SegmentRecord = {
-  start: Vec3Like;
-  end: Vec3Like;
-  endFrame: FrameState;
-  sourceIndex: number;
-  lane: "cut" | "rapid";
-};
 type HoverTooltipData = {
   segment: SegmentRecord;
   x: number;
@@ -78,28 +76,6 @@ function sampleSegments(segments: SegmentRecord[], maxCount: number): SegmentRec
   const last = segments[segments.length - 1];
   if (out[out.length - 1] !== last) out.push(last);
   return out;
-}
-
-function pointToSegmentDistanceSq2D(
-  px: number,
-  py: number,
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-): number {
-  const abx = bx - ax;
-  const aby = by - ay;
-  const apx = px - ax;
-  const apy = py - ay;
-  const abLenSq = abx * abx + aby * aby;
-  if (abLenSq < 1e-8) return apx * apx + apy * apy;
-  const t = Math.max(0, Math.min(1, (apx * abx + apy * aby) / abLenSq));
-  const cx = ax + abx * t;
-  const cy = ay + aby * t;
-  const dx = px - cx;
-  const dy = py - cy;
-  return dx * dx + dy * dy;
 }
 
 function FocusSegment({
@@ -421,8 +397,10 @@ function RayPickController({
     const segB = new Vector3();
     const ptRay = new Vector3();
     const ptSeg = new Vector3();
+    const pa = new Vector3();
+    const pb = new Vector3();
     let rafId = 0;
-    let pendingMove: PointerEvent | null = null;
+    let pendingMove: { clientX: number; clientY: number } | null = null;
     let lastHoverHit: SegmentRecord | null = null;
     let downHit: SegmentRecord | null = null;
 
@@ -454,25 +432,24 @@ function RayPickController({
         const my = clientY - rect.top;
         const pxThreshold = 28;
         const pxThresholdSq = pxThreshold * pxThreshold;
-        const pa = new Vector3();
-        const pb = new Vector3();
-        let best: SegmentRecord | null = null;
-        let bestD2 = Number.POSITIVE_INFINITY;
-        for (const seg of fullSegments) {
+        const best = findClosestScreenSpaceSegment(fullSegments, mx, my, pxThresholdSq, (seg) => {
           pa.set(seg.start.x, seg.start.y, seg.start.z).project(camera);
           pb.set(seg.end.x, seg.end.y, seg.end.z).project(camera);
-          if (!Number.isFinite(pa.x) || !Number.isFinite(pa.y) || !Number.isFinite(pb.x) || !Number.isFinite(pb.y)) continue;
-          const ax = (pa.x * 0.5 + 0.5) * rect.width;
-          const ay = (-pa.y * 0.5 + 0.5) * rect.height;
-          const bx = (pb.x * 0.5 + 0.5) * rect.width;
-          const by = (-pb.y * 0.5 + 0.5) * rect.height;
-          const d2 = pointToSegmentDistanceSq2D(mx, my, ax, ay, bx, by);
-          if (d2 < bestD2) {
-            bestD2 = d2;
-            best = seg;
+          if (!Number.isFinite(pa.x) || !Number.isFinite(pa.y) || !Number.isFinite(pb.x) || !Number.isFinite(pb.y)) {
+            return {
+              ax: Number.POSITIVE_INFINITY,
+              ay: Number.POSITIVE_INFINITY,
+              bx: Number.POSITIVE_INFINITY,
+              by: Number.POSITIVE_INFINITY,
+            };
           }
-        }
-        if (best && bestD2 <= pxThresholdSq) return best;
+          return {
+            ax: (pa.x * 0.5 + 0.5) * rect.width,
+            ay: (-pa.y * 0.5 + 0.5) * rect.height,
+            bx: (pb.x * 0.5 + 0.5) * rect.width,
+            by: (-pb.y * 0.5 + 0.5) * rect.height,
+          };
+        });
         if (best) return best;
       }
 
@@ -531,7 +508,7 @@ function RayPickController({
 
     const onMove = (e: PointerEvent) => {
       if (!enabled || pointerDown) return;
-      pendingMove = e;
+      pendingMove = { clientX: e.clientX, clientY: e.clientY };
       if (!rafId) rafId = window.requestAnimationFrame(flushMove);
     };
 
@@ -605,9 +582,67 @@ function RayPickController({
   return null;
 }
 
-export function Viewer3D({
+const MemoRayPickController = memo(RayPickController);
+
+const StaticPathGroup = memo(function StaticPathGroup({
+  renderCutPoints,
+  renderRapidPoints,
+  renderUvwPoints,
+  renderPlungePoints,
+  showRapidPath,
+  lineColor,
+}: {
+  renderCutPoints: number[];
+  renderRapidPoints: number[];
+  renderUvwPoints: number[];
+  renderPlungePoints: number[];
+  showRapidPath: boolean;
+  lineColor: string;
+}) {
+  return (
+    <group>
+      {renderCutPoints.length > 1 && <Line points={asDreiLinePoints(renderCutPoints)} color={lineColor} lineWidth={1.8} segments />}
+      {showRapidPath && renderRapidPoints.length > 1 && (
+        <Line
+          points={asDreiLinePoints(renderRapidPoints)}
+          color="#94a3b8"
+          lineWidth={1.2}
+          segments
+          dashed={renderRapidPoints.length < 7000}
+          dashScale={2.2}
+          gapSize={0.9}
+        />
+      )}
+      {renderUvwPoints.length > 1 && (
+        <Line points={asDreiLinePoints(renderUvwPoints)} color="#a855f7" lineWidth={1.8} segments />
+      )}
+      {renderPlungePoints.length > 1 && (
+        <Line points={asDreiLinePoints(renderPlungePoints)} color="#facc15" lineWidth={1.8} segments />
+      )}
+    </group>
+  );
+});
+
+const FocusOverlay = memo(function FocusOverlay({
+  focusSegment,
+  focusWidth,
+  sceneScale,
+}: {
+  focusSegment: Vector3[] | null;
+  focusWidth: number;
+  sceneScale: number;
+}) {
+  return (
+    <>
+      <FocusSegment points={focusSegment} lineWidth={focusWidth} />
+      <ToolPoint segment={focusSegment} sceneScale={sceneScale} />
+    </>
+  );
+});
+
+function Viewer3DInner({
   frames,
-  codeContent,
+  codeLines,
   currentFrame,
   hoverFrame,
   cameraState,
@@ -626,28 +661,7 @@ export function Viewer3D({
   onRefocusApplied,
   fitOnResize = true,
   onRequestNamedView,
-}: {
-  frames: FrameState[];
-  codeContent?: string;
-  currentFrame: FrameState | null;
-  hoverFrame?: FrameState | null;
-  cameraState: CameraState | null;
-  onFramePick?: (frame: FrameState) => void;
-  onFrameHover?: (frame: FrameState) => void;
-  onFrameHoverEnd?: () => void;
-  onViewerHotkeyScopeChange?: (active: boolean) => void;
-  onCameraStateChange?: (state: CameraState) => void;
-  theme: "light" | "navy" | "dark";
-  interactionMode: "pan" | "rotate";
-  showGrid: boolean;
-  showRapidPath: boolean;
-  showPathTooltip: boolean;
-  showOrientationGizmo?: boolean;
-  refocusNonce?: number;
-  onRefocusApplied?: () => void;
-  fitOnResize?: boolean;
-  onRequestNamedView?: (view: "Top" | "Front" | "Right") => void;
-}) {
+}: Viewer3DProps) {
   const { t } = useTranslation();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const [controlsReady, setControlsReady] = useState(false);
@@ -686,132 +700,11 @@ export function Viewer3D({
     if (adaptiveFactor < 1) return [0.7, 1];
     return [0.85, 1.25];
   }, [adaptiveFactor]);
-  const codeLines = useMemo(() => codeContent?.split(/\r?\n/) ?? [], [codeContent]);
-  const segmentData = useMemo(() => {
-    const cutRenderSegments: SegmentRecord[] = [];
-    const uvwRenderSegments: SegmentRecord[] = [];
-    const plungeRenderSegments: SegmentRecord[] = [];
-    const rapidRenderSegments: SegmentRecord[] = [];
-    const cutSegments: SegmentRecord[] = [];
-    const rapidSegments: SegmentRecord[] = [];
-    const lastByDomain: Record<"xyz" | "uvw", Vec3Like | null> = {
-      xyz: null,
-      uvw: null,
-    };
-    const explicitWByLine = new Map<number, number>();
-    for (let i = 0; i < codeLines.length; i += 1) {
-      const raw = codeLines[i];
-      if (!raw) continue;
-      const clean = raw.replace(/\([^)]*\)/g, "").replace(/;.*$/g, "").toUpperCase();
-      const matches = [...clean.matchAll(/\bW([+-]?\d+(?:\.\d+)?)\b/g)];
-      if (!matches.length) continue;
-      const last = matches[matches.length - 1];
-      const value = Number(last[1]);
-      if (Number.isFinite(value)) explicitWByLine.set(i + 1, value);
-    }
-    // Build modal W table (same semantics as NC axes: omitted word keeps previous value).
-    const modalWByLine = new Map<number, number>();
-    let modalW: number | null = null;
-    for (let line = 1; line <= codeLines.length; line += 1) {
-      const explicit = explicitWByLine.get(line);
-      if (explicit !== undefined) modalW = explicit;
-      if (modalW !== null) modalWByLine.set(line, modalW);
-    }
-    let lastWValue: number | null = null;
-
-    for (let i = 1; i < frames.length; i += 1) {
-      const a = frames[i - 1];
-      const b = frames[i];
-      const domain = b.axisDomain ?? "xyz";
-      const plungeBase = a.position;
-      // Domain-local plunge classification:
-      // - XYZ (front): Z decreasing means tool goes down.
-      // - UVW (back side): mapped Z increases when W decreases (W2 < W1).
-      //   Use geometric delta as primary source to avoid line-number/modal edge cases.
-      const currentW = modalWByLine.get(b.lineNumber);
-      const prevW = modalWByLine.get(a.lineNumber) ?? lastWValue;
-      const isPlunge = domain === "uvw"
-        ? (
-          // UVW is mapped to XYZ with Z = -W, so plunge on back side means Z increases.
-          b.position.z > a.position.z + 1e-6 ||
-          (currentW !== undefined && prevW !== null && prevW !== undefined && currentW < prevW - 1e-6)
-        )
-        : b.position.z < a.position.z - 1e-6;
-      if (b.motion === "Rapid") {
-        const seg: SegmentRecord = {
-          start: a.position,
-          end: b.position,
-          endFrame: b,
-          sourceIndex: rapidSegments.length,
-          lane: "rapid",
-        };
-        rapidSegments.push(seg);
-        rapidRenderSegments.push(seg);
-        // Laser (UVW->Z mapped) can perform plunge on rapid moves too.
-        // Keep plunge highlighting consistent with front-side yellow segments.
-        if (isPlunge) {
-          plungeRenderSegments.push({
-            start: plungeBase,
-            end: b.position,
-            endFrame: b,
-            sourceIndex: plungeRenderSegments.length,
-            lane: "cut",
-          });
-          // Keep plunge segments pickable even when rapid-path display is hidden.
-          cutSegments.push({
-            start: plungeBase,
-            end: b.position,
-            endFrame: b,
-            sourceIndex: cutSegments.length,
-            lane: "cut",
-          });
-        }
-      } else {
-        const seg: SegmentRecord = {
-          start: a.position,
-          end: b.position,
-          endFrame: b,
-          sourceIndex: cutSegments.length,
-          lane: "cut",
-        };
-        cutSegments.push(seg);
-        if (b.axisDomain === "uvw") {
-          uvwRenderSegments.push(seg);
-          if (isPlunge) {
-            // Laser-integrated (UVW) plunge segments should also be highlighted in yellow.
-            plungeRenderSegments.push({
-              start: plungeBase,
-              end: b.position,
-              endFrame: b,
-              sourceIndex: plungeRenderSegments.length,
-              lane: "cut",
-            });
-          }
-        } else if (isPlunge) {
-          plungeRenderSegments.push({
-            start: plungeBase,
-            end: b.position,
-            endFrame: b,
-            sourceIndex: plungeRenderSegments.length,
-            lane: "cut",
-          });
-        } else {
-          cutRenderSegments.push(seg);
-        }
-      }
-      if (domain === "uvw" && currentW !== undefined) lastWValue = currentW;
-      lastByDomain[domain] = b.position;
-    }
-
-    return {
-      cutRenderSegments,
-      uvwRenderSegments,
-      plungeRenderSegments,
-      rapidRenderSegments,
-      cutSegments,
-      rapidSegments,
-    };
-  }, [codeLines, frames]);
+  const normalizedCodeLines = codeLines ?? [];
+  const segmentData = useMemo(
+    () => buildViewerSegmentData(frames, normalizedCodeLines),
+    [frames, normalizedCodeLines],
+  );
   const pickCutSegments = useMemo(
     () => sampleSegments(segmentData.cutSegments, scaledCount(9000, 1800)),
     [scaledCount, segmentData.cutSegments],
@@ -832,51 +725,27 @@ export function Viewer3D({
   const renderCutPoints = useMemo(
     () => {
       const maxSegs = isPointerDown ? scaledCount(9000, 1800) : scaledCount(28000, 3200);
-      const sampled = sampleSegments(segmentData.cutRenderSegments, maxSegs);
-      const out: Vector3[] = [];
-      for (const s of sampled) {
-        out.push(new Vector3(s.start.x, s.start.y, s.start.z));
-        out.push(new Vector3(s.end.x, s.end.y, s.end.z));
-      }
-      return out;
+      return buildLinePointBuffer(segmentData.cutRenderSegments, maxSegs);
     },
     [isPointerDown, scaledCount, segmentData.cutRenderSegments],
   );
   const renderPlungePoints = useMemo(
     () => {
-      // Keep plunge lines complete to avoid visual "missing yellow segment" in laser back-side paths.
-      const out: Vector3[] = [];
-      for (const s of segmentData.plungeRenderSegments) {
-        out.push(new Vector3(s.start.x, s.start.y, s.start.z));
-        out.push(new Vector3(s.end.x, s.end.y, s.end.z));
-      }
-      return out;
+      return buildLinePointBuffer(segmentData.plungeRenderSegments);
     },
     [segmentData.plungeRenderSegments],
   );
   const renderUvwPoints = useMemo(
     () => {
       const maxSegs = isPointerDown ? scaledCount(7000, 1400) : scaledCount(22000, 2800);
-      const sampled = sampleSegments(segmentData.uvwRenderSegments, maxSegs);
-      const out: Vector3[] = [];
-      for (const s of sampled) {
-        out.push(new Vector3(s.start.x, s.start.y, s.start.z));
-        out.push(new Vector3(s.end.x, s.end.y, s.end.z));
-      }
-      return out;
+      return buildLinePointBuffer(segmentData.uvwRenderSegments, maxSegs);
     },
     [isPointerDown, scaledCount, segmentData.uvwRenderSegments],
   );
   const renderRapidPoints = useMemo(
     () => {
       const maxSegs = isPointerDown ? scaledCount(6000, 1000) : scaledCount(18000, 2400);
-      const sampled = sampleSegments(segmentData.rapidRenderSegments, maxSegs);
-      const out: Vector3[] = [];
-      for (const s of sampled) {
-        out.push(new Vector3(s.start.x, s.start.y, s.start.z));
-        out.push(new Vector3(s.end.x, s.end.y, s.end.z));
-      }
-      return out;
+      return buildLinePointBuffer(segmentData.rapidRenderSegments, maxSegs);
     },
     [isPointerDown, scaledCount, segmentData.rapidRenderSegments],
   );
@@ -934,71 +803,10 @@ export function Viewer3D({
   const markerFrame = currentFrame ?? hoverFrame ?? null;
 
   const focusSegment = useMemo(() => {
-    if (!markerFrame || frames.length < 2) return null;
-    if (
-      pickedSegment &&
-      pickedSegment.endFrame.index === markerFrame.index &&
-      pickedSegment.endFrame.lineNumber === markerFrame.lineNumber
-    ) {
-      return [
-        new Vector3(pickedSegment.start.x, pickedSegment.start.y, pickedSegment.start.z),
-        new Vector3(pickedSegment.end.x, pickedSegment.end.y, pickedSegment.end.z),
-      ];
-    }
-    const markerIdx = typeof markerFrame.index === "number"
-      ? Math.max(0, Math.min(frames.length - 1, markerFrame.index))
-      : Math.max(0, frames.findIndex((f) => f.lineNumber === markerFrame.lineNumber));
-
-    // Prefer exact frame-index segment for progress scrubber sync reliability.
-    const makeSeg = (aIdx: number, bIdx: number) => {
-      if (aIdx < 0 || bIdx < 0 || aIdx >= frames.length || bIdx >= frames.length) return null;
-      const a = frames[aIdx].position;
-      const b = frames[bIdx].position;
-      const len = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-      if (len < 1e-8) return null;
-      return [new Vector3(a.x, a.y, a.z), new Vector3(b.x, b.y, b.z)];
-    };
-
-    const exact = markerIdx > 0 ? makeSeg(markerIdx - 1, markerIdx) : makeSeg(0, 1);
-    if (exact) return exact;
-
-    // Editor-driven sync: prefer a real segment from the same NC line.
-    const line = markerFrame.lineNumber;
-    let bestSameLine: Vector3[] | null = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-    for (let i = 1; i < frames.length; i += 1) {
-      if (frames[i].lineNumber !== line) continue;
-      const seg = makeSeg(i - 1, i);
-      if (!seg) continue;
-      const score = Math.abs(i - markerIdx);
-      if (score < bestScore) {
-        bestScore = score;
-        bestSameLine = seg;
-      }
-    }
-    if (bestSameLine) return bestSameLine;
-
-    // If current frame is degenerate, walk neighbors to find nearest visible segment.
-    for (let d = 1; d < Math.min(60, frames.length); d += 1) {
-      const left = markerIdx - d;
-      const right = markerIdx + d;
-      const leftSeg = left > 0 ? makeSeg(left - 1, left) : null;
-      if (leftSeg) return leftSeg;
-      const rightSeg = right < frames.length ? makeSeg(Math.max(0, right - 1), right) : null;
-      if (rightSeg) return rightSeg;
-    }
-
-    // Last fallback: aggregate all segments for current line (for interpolated arc lines).
-    const fallbackLine = markerFrame.lineNumber;
-    const all: Vector3[] = [];
-    for (let i = 1; i < frames.length; i += 1) {
-      if (frames[i].lineNumber !== fallbackLine) continue;
-      const seg = makeSeg(i - 1, i);
-      if (!seg) continue;
-      all.push(seg[0], seg[1]);
-    }
-    return all.length > 1 ? all : null;
-  }, [markerFrame, frames, pickedSegment]);
+    const focusPoints = resolveViewerFocusSegment(frames, markerFrame, pickedSegment);
+    if (!focusPoints) return null;
+    return focusPoints.map((point) => new Vector3(point.x, point.y, point.z));
+  }, [frames, markerFrame, pickedSegment]);
 
   const focusWidth = markerFrame?.motion === "Rapid" ? 1.2 : 1.8;
   const hoverInfo = useMemo(() => {
@@ -1009,7 +817,7 @@ export function Viewer3D({
     const dz = seg.end.z - seg.start.z;
     const length = Math.hypot(dx, dy, dz);
     const isCurve = seg.endFrame.motion === "ArcCw" || seg.endFrame.motion === "ArcCcw";
-    const rawLine = codeLines[Math.max(0, (seg.endFrame.lineNumber ?? 1) - 1)] ?? "";
+    const rawLine = normalizedCodeLines[Math.max(0, (seg.endFrame.lineNumber ?? 1) - 1)] ?? "";
     const words = parseWordsFromNcLine(rawLine);
     return {
       isCurve,
@@ -1024,9 +832,9 @@ export function Viewer3D({
       chord: Math.hypot(dx, dy),
       words,
     };
-  }, [codeLines, hoverTooltip]);
+  }, [hoverTooltip, normalizedCodeLines]);
 
-  const queueHoverTooltip = (seg: SegmentRecord, clientX: number, clientY: number) => {
+  const queueHoverTooltip = useCallback((seg: SegmentRecord, clientX: number, clientY: number) => {
     if (!showPathTooltip) return;
     if (hoverDelayRef.current) window.clearTimeout(hoverDelayRef.current);
     const nextData = { segment: seg, x: clientX, y: clientY };
@@ -1037,13 +845,29 @@ export function Viewer3D({
     hoverDelayRef.current = window.setTimeout(() => {
       setHoverTooltip(nextData);
     }, 1000);
-  };
+  }, [hoverTooltip, showPathTooltip]);
 
-  const clearHoverTooltip = () => {
+  const clearHoverTooltip = useCallback(() => {
     if (hoverDelayRef.current) window.clearTimeout(hoverDelayRef.current);
     hoverDelayRef.current = null;
     setHoverTooltip(null);
-  };
+  }, []);
+
+  const handleHoverSegment = useCallback((seg: SegmentRecord, x: number, y: number) => {
+    onFrameHover?.(seg.endFrame);
+    queueHoverTooltip(seg, x, y);
+  }, [onFrameHover, queueHoverTooltip]);
+
+  const handlePickSegment = useCallback((seg: SegmentRecord, x: number, y: number) => {
+    setPickedSegment(seg);
+    onFramePick?.(seg.endFrame);
+    if (showPathTooltip) setHoverTooltip({ segment: seg, x, y });
+  }, [onFramePick, showPathTooltip]);
+
+  const handleHoverEnd = useCallback(() => {
+    onFrameHoverEnd?.();
+    clearHoverTooltip();
+  }, [clearHoverTooltip, onFrameHoverEnd]);
 
   useEffect(() => () => {
     if (hoverDelayRef.current) window.clearTimeout(hoverDelayRef.current);
@@ -1400,30 +1224,16 @@ export function Viewer3D({
           onApplied={onCameraStateChange}
           onDone={onRefocusApplied}
         />
-        <group>
-          {renderCutPoints.length > 1 && <Line points={renderCutPoints} color={lineColor} lineWidth={1.8} segments />}
-          {showRapidPath && renderRapidPoints.length > 1 && (
-            <Line
-              points={renderRapidPoints}
-              color="#94a3b8"
-              lineWidth={1.2}
-              segments
-              dashed={renderRapidPoints.length < 7000}
-              dashScale={2.2}
-              gapSize={0.9}
-            />
-          )}
-          {renderUvwPoints.length > 1 && (
-            <Line points={renderUvwPoints} color="#a855f7" lineWidth={1.8} segments />
-          )}
-          {renderPlungePoints.length > 1 && (
-            <Line points={renderPlungePoints} color="#facc15" lineWidth={1.8} segments />
-          )}
-
-          <FocusSegment points={focusSegment} lineWidth={focusWidth} />
-          <ToolPoint segment={focusSegment} sceneScale={sceneScale} />
-        </group>
-        <RayPickController
+        <StaticPathGroup
+          renderCutPoints={renderCutPoints}
+          renderRapidPoints={renderRapidPoints}
+          renderUvwPoints={renderUvwPoints}
+          renderPlungePoints={renderPlungePoints}
+          showRapidPath={showRapidPath}
+          lineColor={lineColor}
+        />
+        <FocusOverlay focusSegment={focusSegment} focusWidth={focusWidth} sceneScale={sceneScale} />
+        <MemoRayPickController
           sampledSegments={sampledPickSegments}
           fullSegments={fullPickSegments}
           cutSegments={segmentData.cutSegments}
@@ -1432,19 +1242,9 @@ export function Viewer3D({
           sceneScale={sceneScale}
           focusCenter={geometryCenter}
           onHoverStateChange={setIsPickTargetHovered}
-          onHoverSegment={(seg, x, y) => {
-            onFrameHover?.(seg.endFrame);
-            queueHoverTooltip(seg, x, y);
-          }}
-          onPickSegment={(seg, x, y) => {
-            setPickedSegment(seg);
-            onFramePick?.(seg.endFrame);
-            if (showPathTooltip) setHoverTooltip({ segment: seg, x, y });
-          }}
-          onHoverEnd={() => {
-            onFrameHoverEnd?.();
-            clearHoverTooltip();
-          }}
+          onHoverSegment={handleHoverSegment}
+          onPickSegment={handlePickSegment}
+          onHoverEnd={handleHoverEnd}
         />
 
         <OrbitControls
@@ -1603,3 +1403,4 @@ export function Viewer3D({
   );
 }
 
+export const Viewer3D = memo(Viewer3DInner, areViewer3DPropsEqual);

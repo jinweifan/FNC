@@ -40,7 +40,8 @@ import {
 } from "lucide-react";
 import "./App.css";
 import { Viewer3D } from "./components/Viewer3D";
-import type { CameraState, FrameState, NcFileItem, NcMode, ParseResult, Vec3 } from "./types";
+import { splitCodeLines, toLoadedProgramState } from "./lib/loadedProgram";
+import type { CameraState, FrameState, LoadedProgramState, NcFileItem, NcMode, ParseResult, Vec3 } from "./types";
 import { parseNcToFrames } from "./lib/ncPath";
 
 // Force local Monaco runtime (no CDN), critical for offline/Linux package environments.
@@ -438,6 +439,7 @@ function App() {
   const editorCursorListenerRef = useRef<Monaco.IDisposable | null>(null);
   const decoRef = useRef<string[]>([]);
   const parseDebounceRef = useRef<number | null>(null);
+  const editorFollowResetTimerRef = useRef<number | null>(null);
   const suppressCursorSyncRef = useRef(false);
   const framesRef = useRef<FrameState[]>([]);
   const lastEditorFollowTsRef = useRef(0);
@@ -484,7 +486,7 @@ function App() {
   });
   const [code, setCode] = useState("");
   const [lastSavedContent, setLastSavedContent] = useState("");
-  const [parseResult, setParseResult] = useState<ParseResult | null>(null);
+  const [loadedProgram, setLoadedProgram] = useState<LoadedProgramState | null>(null);
   const [frames, setFrames] = useState<FrameState[]>([]);
   const [currentFrame, setCurrentFrame] = useState<FrameState | null>(null);
   const [hoverFrame, setHoverFrame] = useState<FrameState | null>(null);
@@ -552,7 +554,7 @@ function App() {
   const resolvedTheme: "light" | "navy" | "dark" = themeMode === "system"
     ? (systemDark ? "dark" : "light")
     : (themeMode === "xdark" ? "dark" : themeMode);
-  const hasUnsavedChanges = Boolean(parseResult) && code !== lastSavedContent;
+  const hasUnsavedChanges = Boolean(loadedProgram) && code !== lastSavedContent;
   const visiblePaneCount = [showFiles, showEditor, showViewer].filter(Boolean).length;
   const speedOptions: Array<{ value: SpeedMode; label: string }> = [
     { value: "Low", label: t("speedLow") },
@@ -645,7 +647,7 @@ function App() {
       .sort((a, b) => b.lastOpenedAtMs - a.lastOpenedAtMs)
       .slice(0, 10);
   }, [fileSearch, recentFiles]);
-  const codeLines = useMemo(() => code.split(/\r?\n/), [code]);
+  const codeLines = useMemo(() => splitCodeLines(code), [code]);
   const currentNcLineText = useMemo(() => {
     if (!currentFrame || !codeLines.length) return "-";
     const raw = codeLines[Math.max(0, currentFrame.lineNumber - 1)] ?? "";
@@ -801,7 +803,7 @@ function App() {
     suppressCameraFeedbackUntilRef.current = performance.now() + 520;
     setRefocusNonce(0);
     setCameraState(nextFrames.length > 1 ? cameraForView(nextFrames, "Top") : null);
-    setParseResult(result);
+    setLoadedProgram(toLoadedProgramState(result));
     setCode(result.content);
     setLastSavedContent(result.content);
     setFrames(nextFrames);
@@ -892,7 +894,7 @@ function App() {
   }, [activeFile, launchProbeDone, loadNcFileWithFolderContext, recentFiles]);
 
   useEffect(() => {
-    if (!parseResult) return;
+    if (!loadedProgram) return;
     if (parseDebounceRef.current) window.clearTimeout(parseDebounceRef.current);
     parseDebounceRef.current = window.setTimeout(() => {
       const detectedMode = detectNcMode(code);
@@ -914,7 +916,7 @@ function App() {
     return () => {
       if (parseDebounceRef.current) window.clearTimeout(parseDebounceRef.current);
     };
-  }, [code, parseResult, updatePlayProgress]);
+  }, [code, loadedProgram, updatePlayProgress]);
 
   useEffect(() => {
     if (!isPlaying || frames.length < 2) return;
@@ -965,7 +967,10 @@ function App() {
         } else {
           editorRef.current.revealLineInCenter(currentFrame.lineNumber);
         }
-        window.setTimeout(() => {
+        if (editorFollowResetTimerRef.current) {
+          window.clearTimeout(editorFollowResetTimerRef.current);
+        }
+        editorFollowResetTimerRef.current = window.setTimeout(() => {
           suppressCursorSyncRef.current = false;
         }, 0);
       }
@@ -978,6 +983,15 @@ function App() {
       },
     ]);
   }, [currentFrame, isPlaying]);
+
+  useEffect(() => {
+    return () => {
+      if (editorFollowResetTimerRef.current) {
+        window.clearTimeout(editorFollowResetTimerRef.current);
+        editorFollowResetTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const onEditorMount: OnMount = (editor, monaco) => {
     setEditorReady(true);
@@ -1094,7 +1108,50 @@ function App() {
     setCurrentFrame(frames[safe]);
   }, [frames, updatePlayProgress]);
 
-  const setView = async (name: string) => {
+  const handleViewerFrameHover = useCallback((frame: FrameState) => {
+    if (pathNavActive) return;
+    setHoverFrame(frame);
+  }, [pathNavActive]);
+
+  const handleViewerFrameHoverEnd = useCallback(() => {
+    setHoverFrame(null);
+  }, []);
+
+  const handleViewerFramePick = useCallback((frame: FrameState) => {
+    setPathNavActive(true);
+    setHoverFrame(null);
+    setIsPlaying(false);
+    selectFrameByIndex(frame.index);
+  }, [selectFrameByIndex]);
+
+  const handleViewerRefocusApplied = useCallback(() => {
+    setRefocusNonce(0);
+  }, []);
+
+  const handleViewerRequestNamedView = useCallback((view: "Top" | "Front" | "Right") => {
+    void setView(view);
+  }, []);
+
+  const handleViewerCameraStateChange = useCallback((next: CameraState) => {
+    if (performance.now() < suppressCameraFeedbackUntilRef.current) return;
+    setCameraState((prev) => {
+      if (!prev) return next;
+      const dp = Math.hypot(
+        prev.position.x - next.position.x,
+        prev.position.y - next.position.y,
+        prev.position.z - next.position.z,
+      );
+      const dt = Math.hypot(
+        prev.target.x - next.target.x,
+        prev.target.y - next.target.y,
+        prev.target.z - next.target.z,
+      );
+      if (dp < 1e-4 && dt < 1e-4 && prev.viewName === next.viewName) return prev;
+      return next;
+    });
+  }, []);
+
+  const setView = useCallback(async (name: string) => {
     if (frames.length) {
       suppressCameraFeedbackUntilRef.current = performance.now() + 260;
       setCameraState(cameraForView(frames, name));
@@ -1111,7 +1168,7 @@ function App() {
       suppressCameraFeedbackUntilRef.current = performance.now() + 260;
       setCameraState({ target: cur, position: presets[name] ?? presets.Top, zoom: 1, viewName: name });
     }
-  };
+  }, [currentFrame?.position, frames]);
 
   const zoomCamera = useCallback((factor: number) => {
     setCameraState((prev) => {
@@ -1291,10 +1348,10 @@ function App() {
   }, [activeFile, saveToPath]);
 
   const saveCurrentFile = useCallback(async () => {
-    if (!parseResult) return false;
+    if (!loadedProgram) return false;
     if (!activeFile) return saveAsCurrentFile();
     return saveToPath(activeFile);
-  }, [activeFile, parseResult, saveAsCurrentFile, saveToPath]);
+  }, [activeFile, loadedProgram, saveAsCurrentFile, saveToPath]);
 
   useEffect(() => {
     if (!inTauriRuntime()) return;
@@ -1615,9 +1672,9 @@ function App() {
           <section className="viewer-pane panel" style={{ flex: "1 1 auto" }}>
             <h3>{t("viewer")}</h3>
             <Viewer3D
-              key={activeFile || parseResult?.fileName || "viewer-default"}
+              key={activeFile || loadedProgram?.fileName || "viewer-default"}
               frames={frames}
-              codeContent={code}
+              codeLines={codeLines}
               currentFrame={currentFrame}
               hoverFrame={hoverFrame}
               cameraState={cameraState}
@@ -1628,42 +1685,15 @@ function App() {
               showRapidPath={showRapidPath}
               showPathTooltip={showPathTooltip}
               refocusNonce={refocusNonce}
-              onRefocusApplied={() => setRefocusNonce(0)}
-              onRequestNamedView={(view) => {
-                void setView(view);
-              }}
+              onRefocusApplied={handleViewerRefocusApplied}
+              onRequestNamedView={handleViewerRequestNamedView}
               onViewerHotkeyScopeChange={setViewerHotkeyScope}
               // Keep camera stable across hide/show and file switches; avoid secondary auto-fit jitter.
               fitOnResize={false}
-              onCameraStateChange={(next) => {
-                if (performance.now() < suppressCameraFeedbackUntilRef.current) return;
-                setCameraState((prev) => {
-                  if (!prev) return next;
-                  const dp = Math.hypot(
-                    prev.position.x - next.position.x,
-                    prev.position.y - next.position.y,
-                    prev.position.z - next.position.z,
-                  );
-                  const dt = Math.hypot(
-                    prev.target.x - next.target.x,
-                    prev.target.y - next.target.y,
-                    prev.target.z - next.target.z,
-                  );
-                  if (dp < 1e-4 && dt < 1e-4 && prev.viewName === next.viewName) return prev;
-                  return next;
-                });
-              }}
-              onFrameHover={(frame) => {
-                if (pathNavActive) return;
-                setHoverFrame(frame);
-              }}
-              onFrameHoverEnd={() => setHoverFrame(null)}
-              onFramePick={(frame) => {
-                setPathNavActive(true);
-                setHoverFrame(null);
-                setIsPlaying(false);
-                selectFrameByIndex(frame.index);
-              }}
+              onCameraStateChange={handleViewerCameraStateChange}
+              onFrameHover={handleViewerFrameHover}
+              onFrameHoverEnd={handleViewerFrameHoverEnd}
+              onFramePick={handleViewerFramePick}
             />
             <div className="viewer-meta">
               <div className="viewer-legend" title={legendTooltipText}>
@@ -1769,11 +1799,3 @@ function App() {
 }
 
 export default App;
-
-
-
-
-
-
-
-

@@ -9,7 +9,7 @@ use std::{
     },
     time::UNIX_EPOCH,
 };
-use tauri::{Manager, Size};
+use tauri::{Emitter, Manager, Size};
 
 #[derive(Default)]
 struct AppState {
@@ -913,5 +913,4 @@ pub fn run() {
             }
         });
 }
-
 

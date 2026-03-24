@@ -36,6 +36,23 @@ export interface ParseResult {
   };
 }
 
+export interface LoadedProgramState {
+  filePath: string;
+  fileName: string;
+  extension: string;
+  totalLines: number;
+  totalMoves: number;
+  warnings: string[];
+  bounds: {
+    minX: number;
+    minY: number;
+    minZ: number;
+    maxX: number;
+    maxY: number;
+    maxZ: number;
+  };
+}
+
 export interface MachineProfile {
   filePath: string;
   profileType: string;
