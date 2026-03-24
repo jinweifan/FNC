@@ -44,6 +44,8 @@ function makeProps(): Viewer3DProps {
     showRapidPath: true,
     showPathTooltip: true,
     showOrientationGizmo: true,
+    zoomRequestNonce: 0,
+    zoomRequestScale: 1,
     refocusNonce: 0,
     onRefocusApplied,
     fitOnResize: false,
@@ -59,5 +61,11 @@ test("areViewer3DPropsEqual returns true for stable references", () => {
 test("areViewer3DPropsEqual returns false when any Viewer3D input changes", () => {
   const prev = makeProps();
   const next = { ...prev, currentFrame: null };
+  assert.equal(areViewer3DPropsEqual(prev, next), false);
+});
+
+test("areViewer3DPropsEqual returns false when external zoom request changes", () => {
+  const prev = makeProps();
+  const next = { ...prev, zoomRequestNonce: 1, zoomRequestScale: 0.74 };
   assert.equal(areViewer3DPropsEqual(prev, next), false);
 });

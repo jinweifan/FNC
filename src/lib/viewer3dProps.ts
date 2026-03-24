@@ -17,6 +17,8 @@ export type Viewer3DProps = {
   showRapidPath: boolean;
   showPathTooltip: boolean;
   showOrientationGizmo?: boolean;
+  zoomRequestNonce?: number;
+  zoomRequestScale?: number;
   refocusNonce?: number;
   onRefocusApplied?: () => void;
   fitOnResize?: boolean;
@@ -41,6 +43,8 @@ export function areViewer3DPropsEqual(prev: Viewer3DProps, next: Viewer3DProps):
     prev.showRapidPath === next.showRapidPath &&
     prev.showPathTooltip === next.showPathTooltip &&
     prev.showOrientationGizmo === next.showOrientationGizmo &&
+    prev.zoomRequestNonce === next.zoomRequestNonce &&
+    prev.zoomRequestScale === next.zoomRequestScale &&
     prev.refocusNonce === next.refocusNonce &&
     prev.onRefocusApplied === next.onRefocusApplied &&
     prev.fitOnResize === next.fitOnResize &&

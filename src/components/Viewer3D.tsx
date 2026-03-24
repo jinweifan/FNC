@@ -1,16 +1,18 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Line, OrbitControls } from "@react-three/drei";
 import { Group, MOUSE, Quaternion, Raycaster, Vector2, Vector3 } from "three";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type WheelEvent as ReactWheelEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { PerspectiveCamera } from "three";
 import type { CameraState, FrameState } from "../types";
 import { resolveViewerFocusSegment } from "../lib/viewerFocusSegment";
+import { getGizmoAxisMaterialProps, getGizmoHaloMaterialProps } from "../lib/viewerGizmoLayers";
 import { asDreiLinePoints, buildLinePointBuffer } from "../lib/viewerLinePoints";
 import { findClosestScreenSpaceSegment } from "../lib/viewerPick";
 import { areViewer3DPropsEqual, type Viewer3DProps } from "../lib/viewer3dProps";
 import { buildViewerSegmentData, type SegmentRecord } from "../lib/viewerSegments";
+import { computeAnchoredZoomState } from "../lib/viewerZoom";
 
 type Vec3Like = { x: number; y: number; z: number };
 type HoverTooltipData = {
@@ -297,6 +299,8 @@ function GlobeOrientationGizmo({
   const sphereColor = isLight ? "#f8fafc" : theme === "navy" ? "#0f172a" : "#1f2937";
   const wireColor = isLight ? "#94a3b8" : theme === "navy" ? "#38bdf8" : "#60a5fa";
   const ringColor = isLight ? "#cbd5e1" : theme === "navy" ? "#334155" : "#374151";
+  const haloMaterialProps = getGizmoHaloMaterialProps();
+  const axisMaterialProps = getGizmoAxisMaterialProps();
 
   return (
     <>
@@ -313,28 +317,38 @@ function GlobeOrientationGizmo({
         </mesh>
         <mesh rotation={[Math.PI / 2, 0, 0]}>
           <torusGeometry args={[1.08, 0.015, 12, 80]} />
-          <meshBasicMaterial color={ringColor} transparent opacity={0.56} />
+          <meshBasicMaterial color={ringColor} opacity={0.56} {...haloMaterialProps} />
         </mesh>
         <mesh rotation={[0, Math.PI / 2, 0]}>
           <torusGeometry args={[1.08, 0.015, 12, 80]} />
-          <meshBasicMaterial color={ringColor} transparent opacity={0.56} />
+          <meshBasicMaterial color={ringColor} opacity={0.56} {...haloMaterialProps} />
         </mesh>
         <mesh rotation={[0, 0, Math.PI / 2]}>
           <torusGeometry args={[1.08, 0.015, 12, 80]} />
-          <meshBasicMaterial color={ringColor} transparent opacity={0.56} />
+          <meshBasicMaterial color={ringColor} opacity={0.56} {...haloMaterialProps} />
         </mesh>
-        <arrowHelper args={[new Vector3(1, 0, 0), new Vector3(0, 0, 0), 1.6, 0xef4444, 0.24, 0.12]} />
-        <arrowHelper args={[new Vector3(0, 1, 0), new Vector3(0, 0, 0), 1.6, 0x22c55e, 0.24, 0.12]} />
-        <arrowHelper args={[new Vector3(0, 0, 1), new Vector3(0, 0, 0), 1.6, 0x3b82f6, 0.24, 0.12]} />
+        <arrowHelper
+          args={[new Vector3(1, 0, 0), new Vector3(0, 0, 0), 1.6, 0xef4444, 0.24, 0.12]}
+          renderOrder={axisMaterialProps.renderOrder}
+        />
+        <arrowHelper
+          args={[new Vector3(0, 1, 0), new Vector3(0, 0, 0), 1.6, 0x22c55e, 0.24, 0.12]}
+          renderOrder={axisMaterialProps.renderOrder}
+        />
+        <arrowHelper
+          args={[new Vector3(0, 0, 1), new Vector3(0, 0, 0), 1.6, 0x3b82f6, 0.24, 0.12]}
+          renderOrder={axisMaterialProps.renderOrder}
+        />
         <mesh
           position={[1.72, 0, 0]}
           onClick={(e) => {
             e.stopPropagation();
             onAxisClick?.("X");
           }}
+          renderOrder={axisMaterialProps.renderOrder}
         >
           <sphereGeometry args={[0.14, 20, 20]} />
-          <meshBasicMaterial color="#ef4444" />
+          <meshBasicMaterial color="#ef4444" {...axisMaterialProps} />
         </mesh>
         <mesh
           position={[0, 1.72, 0]}
@@ -342,9 +356,10 @@ function GlobeOrientationGizmo({
             e.stopPropagation();
             onAxisClick?.("Y");
           }}
+          renderOrder={axisMaterialProps.renderOrder}
         >
           <sphereGeometry args={[0.14, 20, 20]} />
-          <meshBasicMaterial color="#22c55e" />
+          <meshBasicMaterial color="#22c55e" {...axisMaterialProps} />
         </mesh>
         <mesh
           position={[0, 0, 1.72]}
@@ -352,9 +367,10 @@ function GlobeOrientationGizmo({
             e.stopPropagation();
             onAxisClick?.("Z");
           }}
+          renderOrder={axisMaterialProps.renderOrder}
         >
           <sphereGeometry args={[0.14, 20, 20]} />
-          <meshBasicMaterial color="#3b82f6" />
+          <meshBasicMaterial color="#3b82f6" {...axisMaterialProps} />
         </mesh>
       </group>
     </>
@@ -657,13 +673,18 @@ function Viewer3DInner({
   showRapidPath,
   showPathTooltip,
   showOrientationGizmo = true,
+  zoomRequestNonce = 0,
+  zoomRequestScale = 1,
   refocusNonce = 0,
   onRefocusApplied,
   fitOnResize = true,
   onRequestNamedView,
 }: Viewer3DProps) {
   const { t } = useTranslation();
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
+  const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
+  const lastHandledZoomRequestRef = useRef(0);
   const [controlsReady, setControlsReady] = useState(false);
   const rotateDragRef = useRef<{ active: boolean; pointerId: number; lastX: number; lastY: number }>({
     active: false,
@@ -685,6 +706,7 @@ function Viewer3DInner({
   const [hoverTooltip, setHoverTooltip] = useState<HoverTooltipData | null>(null);
   const [pickedSegment, setPickedSegment] = useState<SegmentRecord | null>(null);
   const hoverDelayRef = useRef<number | null>(null);
+  const suppressExternalCameraSyncUntilRef = useRef(0);
   const adaptiveFactor = useMemo(() => {
     const n = frames.length;
     if (n > 120_000) return 0.28;
@@ -883,6 +905,7 @@ function Viewer3DInner({
 
   useLayoutEffect(() => {
     if (isPointerDown || rotateDragRef.current.active) return;
+    if (performance.now() < suppressExternalCameraSyncUntilRef.current) return;
     if (!cameraState || !controlsRef.current || !controlsReady) return;
     if (!isFiniteVec3Like(cameraState.position) || !isFiniteVec3Like(cameraState.target)) return;
     const minDistance = Math.max(8, sceneScale * 0.03);
@@ -1051,6 +1074,7 @@ function Viewer3DInner({
   const emitCameraState = useCallback((viewName: CameraState["viewName"] = "Custom") => {
     if (!onCameraStateChange || !controlsRef.current) return;
     const controls = controlsRef.current;
+    suppressExternalCameraSyncUntilRef.current = performance.now() + 180;
     onCameraStateChange({
       target: {
         x: controls.target.x,
@@ -1067,11 +1091,140 @@ function Viewer3DInner({
     });
   }, [onCameraStateChange]);
 
+  const resolveZoomAnchor = useCallback((clientX?: number, clientY?: number) => {
+    const controls = controlsRef.current;
+    const host = wrapperRef.current;
+    if (!controls || !host || clientX == null || clientY == null) {
+      return {
+        x: controls?.target.x ?? 0,
+        y: controls?.target.y ?? 0,
+        z: controls?.target.z ?? 0,
+      };
+    }
+
+    const rect = host.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return { x: controls.target.x, y: controls.target.y, z: controls.target.z };
+    }
+    const mx = clientX - rect.left;
+    const my = clientY - rect.top;
+    const camera = controls.object as PerspectiveCamera;
+    const toScreen = (point: { x: number; y: number; z: number }) => {
+      const projected = new Vector3(point.x, point.y, point.z).project(camera);
+      return {
+        x: (projected.x * 0.5 + 0.5) * rect.width,
+        y: (-projected.y * 0.5 + 0.5) * rect.height,
+      };
+    };
+
+    const best = findClosestScreenSpaceSegment(fullPickSegments, mx, my, 40 * 40, (seg) => {
+      const start = toScreen(seg.start);
+      const end = toScreen(seg.end);
+      if (!Number.isFinite(start.x) || !Number.isFinite(start.y) || !Number.isFinite(end.x) || !Number.isFinite(end.y)) {
+        return {
+          ax: Number.POSITIVE_INFINITY,
+          ay: Number.POSITIVE_INFINITY,
+          bx: Number.POSITIVE_INFINITY,
+          by: Number.POSITIVE_INFINITY,
+        };
+      }
+      return { ax: start.x, ay: start.y, bx: end.x, by: end.y };
+    });
+
+    if (!best) {
+      return { x: controls.target.x, y: controls.target.y, z: controls.target.z };
+    }
+
+    const start = toScreen(best.start);
+    const end = toScreen(best.end);
+    const abx = end.x - start.x;
+    const aby = end.y - start.y;
+    const denom = abx * abx + aby * aby;
+    const ratio = denom > 1e-8
+      ? Math.max(0, Math.min(1, ((mx - start.x) * abx + (my - start.y) * aby) / denom))
+      : 1;
+    return {
+      x: best.start.x + (best.end.x - best.start.x) * ratio,
+      y: best.start.y + (best.end.y - best.start.y) * ratio,
+      z: best.start.z + (best.end.z - best.start.z) * ratio,
+    };
+  }, [fullPickSegments]);
+
+  const handleWheel = useCallback((e: ReactWheelEvent<HTMLDivElement>) => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
+
+    const camera = controls.object as PerspectiveCamera;
+    const anchor = resolveZoomAnchor(e.clientX, e.clientY);
+
+    const next = computeAnchoredZoomState(
+      {
+        x: camera.position.x,
+        y: camera.position.y,
+        z: camera.position.z,
+      },
+      {
+        x: controls.target.x,
+        y: controls.target.y,
+        z: controls.target.z,
+      },
+      anchor,
+      e.deltaY < 0 ? 0.74 : 1.35,
+      controls.minDistance || Math.max(8, sceneScale * 0.03),
+      controls.maxDistance || Math.max(400, sceneScale * 10),
+    );
+
+    camera.position.set(next.position.x, next.position.y, next.position.z);
+    controls.target.set(next.target.x, next.target.y, next.target.z);
+    camera.lookAt(controls.target);
+    camera.updateProjectionMatrix();
+    controls.update();
+    emitCameraState("Custom");
+  }, [emitCameraState, resolveZoomAnchor, sceneScale]);
+
+  useEffect(() => {
+    if (zoomRequestNonce <= 0 || zoomRequestNonce === lastHandledZoomRequestRef.current) return;
+    lastHandledZoomRequestRef.current = zoomRequestNonce;
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const camera = controls.object as PerspectiveCamera;
+    const pointer = lastPointerClientRef.current;
+    const anchor = resolveZoomAnchor(pointer?.x, pointer?.y);
+    const next = computeAnchoredZoomState(
+      {
+        x: camera.position.x,
+        y: camera.position.y,
+        z: camera.position.z,
+      },
+      {
+        x: controls.target.x,
+        y: controls.target.y,
+        z: controls.target.z,
+      },
+      anchor,
+      zoomRequestScale,
+      controls.minDistance || Math.max(8, sceneScale * 0.03),
+      controls.maxDistance || Math.max(400, sceneScale * 10),
+    );
+    camera.position.set(next.position.x, next.position.y, next.position.z);
+    controls.target.set(next.target.x, next.target.y, next.target.z);
+    camera.lookAt(controls.target);
+    camera.updateProjectionMatrix();
+    controls.update();
+    emitCameraState("Custom");
+  }, [emitCameraState, resolveZoomAnchor, sceneScale, zoomRequestNonce, zoomRequestScale]);
+
 
   return (
     <div
+      ref={wrapperRef}
       className={`viewer-canvas-wrap mode-${interactionMode}${isPointerDown ? " dragging" : ""}${isPickTargetHovered ? " pick-hover" : ""}`}
       tabIndex={0}
+      onWheelCapture={handleWheel}
       onPointerDownCapture={(e) => {
         if (e.button !== 2) return;
         e.preventDefault();
@@ -1095,6 +1248,7 @@ function Viewer3DInner({
         }
       }}
       onPointerMoveCapture={(e) => {
+        lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
         if (!rotateDragRef.current.active || rotateDragRef.current.pointerId !== e.pointerId) return;
         e.preventDefault();
         e.stopPropagation();
@@ -1131,12 +1285,14 @@ function Viewer3DInner({
         if (onCameraStateChange && controlsRef.current) emitCameraState("Custom");
       }}
       onPointerDown={(e) => {
+        lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
         setIsPointerDown(true);
         // Keyboard shortcuts should only be active when the 3D viewport is focused.
         (e.currentTarget as HTMLDivElement).focus();
         onViewerHotkeyScopeChange?.(true);
       }}
       onPointerMove={(e) => {
+        lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
         if (rotateDragRef.current.active && rotateDragRef.current.pointerId === e.pointerId) return;
       }}
       onPointerUp={(e) => {
@@ -1251,32 +1407,12 @@ function Viewer3DInner({
           ref={(ctrl) => {
             controlsRef.current = ctrl;
             if (ctrl && !controlsReady) setControlsReady(true);
-            if (ctrl && cameraState && isFiniteVec3Like(cameraState.position) && isFiniteVec3Like(cameraState.target)) {
-              const absolutePos = new Vector3(
-                cameraState.position.x,
-                cameraState.position.y,
-                cameraState.position.z,
-              );
-              const absoluteTarget = new Vector3(
-                cameraState.target.x,
-                cameraState.target.y,
-                cameraState.target.z,
-              );
-              ctrl.object.position.copy(absolutePos);
-              const forward = new Vector3().subVectors(absoluteTarget, absolutePos).normalize();
-              const nearTopOrBottom = Math.abs(forward.dot(new Vector3(0, 0, 1))) > 0.985;
-              ctrl.object.up.set(0, nearTopOrBottom ? 1 : 0, nearTopOrBottom ? 0 : 1);
-              ctrl.target.copy(absoluteTarget);
-              ctrl.object.lookAt(absoluteTarget);
-              ctrl.object.updateProjectionMatrix();
-              ctrl.update();
-            }
           }}
           makeDefault
           enabled
           enablePan
           enableRotate={false}
-          enableZoom
+          enableZoom={false}
           enableDamping={false}
           dampingFactor={0}
           rotateSpeed={2.35}
