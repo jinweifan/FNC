@@ -1,7 +1,7 @@
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Line, OrbitControls } from "@react-three/drei";
-import { MOUSE, Raycaster, Vector2, Vector3 } from "three";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Group, MOUSE, Quaternion, Raycaster, Vector2, Vector3 } from "three";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { PerspectiveCamera } from "three";
@@ -24,6 +24,14 @@ type NcWord = {
   letter: string;
   value: string;
 };
+
+function isFiniteNumber(v: number): boolean {
+  return Number.isFinite(v);
+}
+
+function isFiniteVec3Like(v: Vec3Like): boolean {
+  return isFiniteNumber(v.x) && isFiniteNumber(v.y) && isFiniteNumber(v.z);
+}
 
 function parseWordsFromNcLine(rawLine: string): NcWord[] {
   const clean = rawLine.replace(/\([^)]*\)/g, "").replace(/;.*$/g, "").toUpperCase();
@@ -72,18 +80,6 @@ function sampleSegments(segments: SegmentRecord[], maxCount: number): SegmentRec
   return out;
 }
 
-function sampleLinePairs(points: Vector3[], maxSegments: number): Vector3[] {
-  if (points.length <= maxSegments * 2) return points;
-  const pairCount = Math.floor(points.length / 2);
-  const stride = Math.max(1, Math.ceil(pairCount / maxSegments));
-  const out: Vector3[] = [];
-  for (let p = 0; p < pairCount; p += stride) {
-    const i = p * 2;
-    out.push(points[i], points[i + 1]);
-  }
-  return out;
-}
-
 function pointToSegmentDistanceSq2D(
   px: number,
   py: number,
@@ -106,18 +102,6 @@ function pointToSegmentDistanceSq2D(
   return dx * dx + dy * dy;
 }
 
-function resolveUpVector(position: Vec3Like, target: Vec3Like): Vector3 {
-  const dx = position.x - target.x;
-  const dy = position.y - target.y;
-  const dz = position.z - target.z;
-  const d = Math.hypot(dx, dy, dz);
-  if (d < 1e-6) return new Vector3(0, 1, 0);
-  const nz = dz / d;
-  // Looking almost straight along Z: use Y-up to avoid gimbal-like roll/flip.
-  if (Math.abs(nz) > 0.98) return new Vector3(0, 1, 0);
-  return new Vector3(0, 0, 1);
-}
-
 function FocusSegment({
   points,
   lineWidth,
@@ -136,6 +120,29 @@ function FocusSegment({
       renderOrder={999}
     />
   );
+}
+
+function clampPitchAwayFromPole(offset: Vector3, rightAxis: Vector3, desiredPitch: number): number {
+  if (Math.abs(desiredPitch) < 1e-8) return 0;
+  const worldUp = new Vector3(0, 0, 1);
+  const tmp = offset.clone();
+  const tryApply = (pitch: number) => {
+    const q = new Quaternion().setFromAxisAngle(rightAxis, pitch);
+    tmp.copy(offset).applyQuaternion(q);
+    const forward = tmp.normalize().negate();
+    return Math.abs(forward.dot(worldUp));
+  };
+  const poleLimit = 0.9985; // keep away from singularity at 1.0
+  if (tryApply(desiredPitch) <= poleLimit) return desiredPitch;
+  let lo = 0;
+  let hi = Math.abs(desiredPitch);
+  const sign = desiredPitch >= 0 ? 1 : -1;
+  for (let i = 0; i < 14; i += 1) {
+    const mid = (lo + hi) * 0.5;
+    if (tryApply(mid * sign) <= poleLimit) lo = mid;
+    else hi = mid;
+  }
+  return lo * sign;
 }
 
 function ToolPoint({
@@ -189,11 +196,15 @@ function ToolPoint({
 function ViewportCenterOnResize({
   controlsRef,
   sceneRadius,
+  focusCenter,
   enabled,
+  fitScale = 1.14,
 }: {
   controlsRef: React.MutableRefObject<OrbitControlsImpl | null>;
   sceneRadius: number;
+  focusCenter: Vec3Like;
   enabled: boolean;
+  fitScale?: number;
 }) {
   const { camera, size } = useThree();
 
@@ -201,6 +212,7 @@ function ViewportCenterOnResize({
     if (!enabled || !controlsRef.current || size.width <= 0 || size.height <= 0) return;
 
     const controls = controlsRef.current;
+    if (!isFiniteVec3Like(focusCenter)) return;
     const dir = new Vector3().subVectors(camera.position, controls.target);
     if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1);
     dir.normalize();
@@ -212,18 +224,167 @@ function ViewportCenterOnResize({
     const radius = Math.max(1, sceneRadius);
     const distV = radius / Math.sin(Math.max(0.1, vFov / 2));
     const distH = radius / Math.sin(Math.max(0.1, hFov / 2));
-    const fitDistance = Math.max(120, Math.max(distV, distH) * 1.28);
+    const fitDistance = Math.max(120, Math.max(distV, distH) * fitScale);
+    if (!isFiniteNumber(fitDistance)) return;
 
-    const target = controls.target.clone();
+    const target = new Vector3(focusCenter.x, focusCenter.y, focusCenter.z);
     camera.position.copy(target.clone().add(dir.multiplyScalar(fitDistance)));
     camera.lookAt(target);
     camera.updateProjectionMatrix();
     controls.target.copy(target);
     controls.update();
-  }, [camera, controlsRef, enabled, sceneRadius, size.height, size.width]);
+  }, [camera, controlsRef, enabled, fitScale, focusCenter.x, focusCenter.y, focusCenter.z, sceneRadius, size.height, size.width]);
 
   return null;
 }
+
+function ProgrammaticTopRefocus({
+  controlsRef,
+  sceneRadius,
+  focusCenter,
+  nonce,
+  enabled,
+  fitScale = 0.98,
+  onApplied,
+  onDone,
+}: {
+  controlsRef: React.MutableRefObject<OrbitControlsImpl | null>;
+  sceneRadius: number;
+  focusCenter: Vec3Like;
+  nonce: number;
+  enabled: boolean;
+  fitScale?: number;
+  onApplied?: (state: CameraState) => void;
+  onDone?: () => void;
+}) {
+  const { camera, size } = useThree();
+  const lastAppliedNonceRef = useRef<number>(0);
+
+  useLayoutEffect(() => {
+    if (!enabled || nonce <= 0) return;
+    if (lastAppliedNonceRef.current === nonce) return;
+    if (!controlsRef.current || size.width <= 0 || size.height <= 0) return;
+    if (!isFiniteVec3Like(focusCenter)) return;
+
+    const controls = controlsRef.current;
+    const cam = camera as PerspectiveCamera;
+    const vFov = ((cam.fov ?? 55) * Math.PI) / 180;
+    const aspect = Math.max(0.1, size.width / Math.max(1, size.height));
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+    const radius = Math.max(1, sceneRadius);
+    const distV = radius / Math.sin(Math.max(0.1, vFov / 2));
+    const distH = radius / Math.sin(Math.max(0.1, hFov / 2));
+    const fitDistance = Math.max(120, Math.max(distV, distH) * fitScale);
+    if (!isFiniteNumber(fitDistance)) return;
+
+    const target = new Vector3(focusCenter.x, focusCenter.y, focusCenter.z);
+    cam.position.set(target.x, target.y, target.z + fitDistance);
+    cam.up.set(0, 1, 0);
+    cam.lookAt(target);
+    cam.updateProjectionMatrix();
+    controls.target.copy(target);
+    controls.update();
+    lastAppliedNonceRef.current = nonce;
+
+    onApplied?.({
+      target: { x: target.x, y: target.y, z: target.z },
+      position: { x: target.x, y: target.y, z: target.z + fitDistance },
+      zoom: 1,
+      viewName: "Top",
+    });
+    onDone?.();
+  }, [camera, controlsRef, enabled, fitScale, focusCenter.x, focusCenter.y, focusCenter.z, nonce, onApplied, onDone, sceneRadius, size.height, size.width]);
+
+  return null;
+}
+
+function GlobeOrientationGizmo({
+  controlsRef,
+  theme,
+  onAxisClick,
+}: {
+  controlsRef: React.MutableRefObject<OrbitControlsImpl | null>;
+  theme: "light" | "navy" | "dark";
+  onAxisClick?: (axis: "X" | "Y" | "Z") => void;
+}) {
+  const groupRef = useRef<Group | null>(null);
+  const inv = useMemo(() => new Quaternion(), []);
+
+  useFrame(() => {
+    const controls = controlsRef.current;
+    if (!controls || !groupRef.current) return;
+    inv.copy(controls.object.quaternion).invert();
+    groupRef.current.quaternion.copy(inv);
+  });
+
+  const isLight = theme === "light";
+  const sphereColor = isLight ? "#f8fafc" : theme === "navy" ? "#0f172a" : "#1f2937";
+  const wireColor = isLight ? "#94a3b8" : theme === "navy" ? "#38bdf8" : "#60a5fa";
+  const ringColor = isLight ? "#cbd5e1" : theme === "navy" ? "#334155" : "#374151";
+
+  return (
+    <>
+      <ambientLight intensity={0.75} />
+      <directionalLight intensity={0.9} position={[2, 3, 4]} />
+      <group ref={groupRef}>
+        <mesh>
+          <sphereGeometry args={[1, 32, 32]} />
+          <meshStandardMaterial color={sphereColor} metalness={0.2} roughness={0.45} transparent opacity={0.94} />
+        </mesh>
+        <mesh>
+          <sphereGeometry args={[1.01, 20, 20]} />
+          <meshBasicMaterial color={wireColor} wireframe transparent opacity={0.32} />
+        </mesh>
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[1.08, 0.015, 12, 80]} />
+          <meshBasicMaterial color={ringColor} transparent opacity={0.56} />
+        </mesh>
+        <mesh rotation={[0, Math.PI / 2, 0]}>
+          <torusGeometry args={[1.08, 0.015, 12, 80]} />
+          <meshBasicMaterial color={ringColor} transparent opacity={0.56} />
+        </mesh>
+        <mesh rotation={[0, 0, Math.PI / 2]}>
+          <torusGeometry args={[1.08, 0.015, 12, 80]} />
+          <meshBasicMaterial color={ringColor} transparent opacity={0.56} />
+        </mesh>
+        <arrowHelper args={[new Vector3(1, 0, 0), new Vector3(0, 0, 0), 1.6, 0xef4444, 0.24, 0.12]} />
+        <arrowHelper args={[new Vector3(0, 1, 0), new Vector3(0, 0, 0), 1.6, 0x22c55e, 0.24, 0.12]} />
+        <arrowHelper args={[new Vector3(0, 0, 1), new Vector3(0, 0, 0), 1.6, 0x3b82f6, 0.24, 0.12]} />
+        <mesh
+          position={[1.72, 0, 0]}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAxisClick?.("X");
+          }}
+        >
+          <sphereGeometry args={[0.14, 20, 20]} />
+          <meshBasicMaterial color="#ef4444" />
+        </mesh>
+        <mesh
+          position={[0, 1.72, 0]}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAxisClick?.("Y");
+          }}
+        >
+          <sphereGeometry args={[0.14, 20, 20]} />
+          <meshBasicMaterial color="#22c55e" />
+        </mesh>
+        <mesh
+          position={[0, 0, 1.72]}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAxisClick?.("Z");
+          }}
+        >
+          <sphereGeometry args={[0.14, 20, 20]} />
+          <meshBasicMaterial color="#3b82f6" />
+        </mesh>
+      </group>
+    </>
+  );
+}
+
 function RayPickController({
   sampledSegments,
   fullSegments,
@@ -408,13 +569,17 @@ function RayPickController({
       downHit = null;
     };
 
+    const onPointerLeave = () => {
+      pointerDown = false;
+      onLeave();
+    };
     dom.addEventListener("pointermove", onMove, { passive: true });
-    dom.addEventListener("pointerleave", onLeave, { passive: true });
+    dom.addEventListener("pointerleave", onPointerLeave, { passive: true });
     dom.addEventListener("pointerdown", onPointerDown, { passive: true });
     dom.addEventListener("pointerup", onPointerUp, { passive: true });
     return () => {
       dom.removeEventListener("pointermove", onMove);
-      dom.removeEventListener("pointerleave", onLeave);
+      dom.removeEventListener("pointerleave", onPointerLeave);
       dom.removeEventListener("pointerdown", onPointerDown);
       dom.removeEventListener("pointerup", onPointerUp);
       if (rafId) window.cancelAnimationFrame(rafId);
@@ -456,6 +621,11 @@ export function Viewer3D({
   showGrid,
   showRapidPath,
   showPathTooltip,
+  showOrientationGizmo = true,
+  refocusNonce = 0,
+  onRefocusApplied,
+  fitOnResize = true,
+  onRequestNamedView,
 }: {
   frames: FrameState[];
   codeContent?: string;
@@ -472,9 +642,30 @@ export function Viewer3D({
   showGrid: boolean;
   showRapidPath: boolean;
   showPathTooltip: boolean;
+  showOrientationGizmo?: boolean;
+  refocusNonce?: number;
+  onRefocusApplied?: () => void;
+  fitOnResize?: boolean;
+  onRequestNamedView?: (view: "Top" | "Front" | "Right") => void;
 }) {
   const { t } = useTranslation();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
+  const [controlsReady, setControlsReady] = useState(false);
+  const rotateDragRef = useRef<{ active: boolean; pointerId: number; lastX: number; lastY: number }>({
+    active: false,
+    pointerId: -1,
+    lastX: 0,
+    lastY: 0,
+  });
+  const rotateRightAxisRef = useRef<Vector3>(new Vector3(1, 0, 0));
+  const rotateDeltaRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
+  const rotateRafRef = useRef<number>(0);
+  const gizmoDragRef = useRef<{ active: boolean; pointerId: number; lastX: number; lastY: number }>({
+    active: false,
+    pointerId: -1,
+    lastX: 0,
+    lastY: 0,
+  });
   const [isPointerDown, setIsPointerDown] = useState(false);
   const [isPickTargetHovered, setIsPickTargetHovered] = useState(false);
   const [hoverTooltip, setHoverTooltip] = useState<HoverTooltipData | null>(null);
@@ -497,10 +688,10 @@ export function Viewer3D({
   }, [adaptiveFactor]);
   const codeLines = useMemo(() => codeContent?.split(/\r?\n/) ?? [], [codeContent]);
   const segmentData = useMemo(() => {
-    const cutPoints: Vector3[] = [];
-    const uvwPoints: Vector3[] = [];
-    const plungePoints: Vector3[] = [];
-    const rapidPoints: Vector3[] = [];
+    const cutRenderSegments: SegmentRecord[] = [];
+    const uvwRenderSegments: SegmentRecord[] = [];
+    const plungeRenderSegments: SegmentRecord[] = [];
+    const rapidRenderSegments: SegmentRecord[] = [];
     const cutSegments: SegmentRecord[] = [];
     const rapidSegments: SegmentRecord[] = [];
     const lastByDomain: Record<"xyz" | "uvw", Vec3Like | null> = {
@@ -532,15 +723,20 @@ export function Viewer3D({
       const a = frames[i - 1];
       const b = frames[i];
       const domain = b.axisDomain ?? "xyz";
-      const plungeBase = lastByDomain[domain] ?? a.position;
+      const plungeBase = a.position;
       // Domain-local plunge classification:
       // - XYZ (front): Z decreasing means tool goes down.
-      // - UVW (back side): enforce user's W-rule strictly: W2 < W1 means plunge.
+      // - UVW (back side): mapped Z increases when W decreases (W2 < W1).
+      //   Use geometric delta as primary source to avoid line-number/modal edge cases.
       const currentW = modalWByLine.get(b.lineNumber);
       const prevW = modalWByLine.get(a.lineNumber) ?? lastWValue;
       const isPlunge = domain === "uvw"
-        ? (currentW !== undefined && prevW !== null && prevW !== undefined && currentW < prevW - 1e-6)
-        : b.position.z < plungeBase.z - 1e-6;
+        ? (
+          // UVW is mapped to XYZ with Z = -W, so plunge on back side means Z increases.
+          b.position.z > a.position.z + 1e-6 ||
+          (currentW !== undefined && prevW !== null && prevW !== undefined && currentW < prevW - 1e-6)
+        )
+        : b.position.z < a.position.z - 1e-6;
       if (b.motion === "Rapid") {
         const seg: SegmentRecord = {
           start: a.position,
@@ -550,13 +746,17 @@ export function Viewer3D({
           lane: "rapid",
         };
         rapidSegments.push(seg);
-        rapidPoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
-        rapidPoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+        rapidRenderSegments.push(seg);
         // Laser (UVW->Z mapped) can perform plunge on rapid moves too.
         // Keep plunge highlighting consistent with front-side yellow segments.
         if (isPlunge) {
-          plungePoints.push(new Vector3(plungeBase.x, plungeBase.y, plungeBase.z));
-          plungePoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+          plungeRenderSegments.push({
+            start: plungeBase,
+            end: b.position,
+            endFrame: b,
+            sourceIndex: plungeRenderSegments.length,
+            lane: "cut",
+          });
           // Keep plunge segments pickable even when rapid-path display is hidden.
           cutSegments.push({
             start: plungeBase,
@@ -576,26 +776,41 @@ export function Viewer3D({
         };
         cutSegments.push(seg);
         if (b.axisDomain === "uvw") {
-          uvwPoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
-          uvwPoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+          uvwRenderSegments.push(seg);
           if (isPlunge) {
             // Laser-integrated (UVW) plunge segments should also be highlighted in yellow.
-            plungePoints.push(new Vector3(plungeBase.x, plungeBase.y, plungeBase.z));
-            plungePoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+            plungeRenderSegments.push({
+              start: plungeBase,
+              end: b.position,
+              endFrame: b,
+              sourceIndex: plungeRenderSegments.length,
+              lane: "cut",
+            });
           }
         } else if (isPlunge) {
-          plungePoints.push(new Vector3(plungeBase.x, plungeBase.y, plungeBase.z));
-          plungePoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+          plungeRenderSegments.push({
+            start: plungeBase,
+            end: b.position,
+            endFrame: b,
+            sourceIndex: plungeRenderSegments.length,
+            lane: "cut",
+          });
         } else {
-          cutPoints.push(new Vector3(a.position.x, a.position.y, a.position.z));
-          cutPoints.push(new Vector3(b.position.x, b.position.y, b.position.z));
+          cutRenderSegments.push(seg);
         }
       }
       if (domain === "uvw" && currentW !== undefined) lastWValue = currentW;
       lastByDomain[domain] = b.position;
     }
 
-    return { cutPoints, uvwPoints, plungePoints, rapidPoints, cutSegments, rapidSegments };
+    return {
+      cutRenderSegments,
+      uvwRenderSegments,
+      plungeRenderSegments,
+      rapidRenderSegments,
+      cutSegments,
+      rapidSegments,
+    };
   }, [codeLines, frames]);
   const pickCutSegments = useMemo(
     () => sampleSegments(segmentData.cutSegments, scaledCount(9000, 1800)),
@@ -615,20 +830,55 @@ export function Viewer3D({
   );
   const centerFrames = useMemo(() => framesForCenter(frames), [frames]);
   const renderCutPoints = useMemo(
-    () => sampleLinePairs(segmentData.cutPoints, isPointerDown ? scaledCount(9000, 1800) : scaledCount(28000, 3200)),
-    [isPointerDown, scaledCount, segmentData.cutPoints],
+    () => {
+      const maxSegs = isPointerDown ? scaledCount(9000, 1800) : scaledCount(28000, 3200);
+      const sampled = sampleSegments(segmentData.cutRenderSegments, maxSegs);
+      const out: Vector3[] = [];
+      for (const s of sampled) {
+        out.push(new Vector3(s.start.x, s.start.y, s.start.z));
+        out.push(new Vector3(s.end.x, s.end.y, s.end.z));
+      }
+      return out;
+    },
+    [isPointerDown, scaledCount, segmentData.cutRenderSegments],
   );
   const renderPlungePoints = useMemo(
-    () => sampleLinePairs(segmentData.plungePoints, isPointerDown ? scaledCount(4200, 900) : scaledCount(14000, 1800)),
-    [isPointerDown, scaledCount, segmentData.plungePoints],
+    () => {
+      // Keep plunge lines complete to avoid visual "missing yellow segment" in laser back-side paths.
+      const out: Vector3[] = [];
+      for (const s of segmentData.plungeRenderSegments) {
+        out.push(new Vector3(s.start.x, s.start.y, s.start.z));
+        out.push(new Vector3(s.end.x, s.end.y, s.end.z));
+      }
+      return out;
+    },
+    [segmentData.plungeRenderSegments],
   );
   const renderUvwPoints = useMemo(
-    () => sampleLinePairs(segmentData.uvwPoints, isPointerDown ? scaledCount(7000, 1400) : scaledCount(22000, 2800)),
-    [isPointerDown, scaledCount, segmentData.uvwPoints],
+    () => {
+      const maxSegs = isPointerDown ? scaledCount(7000, 1400) : scaledCount(22000, 2800);
+      const sampled = sampleSegments(segmentData.uvwRenderSegments, maxSegs);
+      const out: Vector3[] = [];
+      for (const s of sampled) {
+        out.push(new Vector3(s.start.x, s.start.y, s.start.z));
+        out.push(new Vector3(s.end.x, s.end.y, s.end.z));
+      }
+      return out;
+    },
+    [isPointerDown, scaledCount, segmentData.uvwRenderSegments],
   );
   const renderRapidPoints = useMemo(
-    () => sampleLinePairs(segmentData.rapidPoints, isPointerDown ? scaledCount(6000, 1000) : scaledCount(18000, 2400)),
-    [isPointerDown, scaledCount, segmentData.rapidPoints],
+    () => {
+      const maxSegs = isPointerDown ? scaledCount(6000, 1000) : scaledCount(18000, 2400);
+      const sampled = sampleSegments(segmentData.rapidRenderSegments, maxSegs);
+      const out: Vector3[] = [];
+      for (const s of sampled) {
+        out.push(new Vector3(s.start.x, s.start.y, s.start.z));
+        out.push(new Vector3(s.end.x, s.end.y, s.end.z));
+      }
+      return out;
+    },
+    [isPointerDown, scaledCount, segmentData.rapidRenderSegments],
   );
 
   const sceneScale = useMemo(() => {
@@ -640,12 +890,19 @@ export function Viewer3D({
     let maxY = Number.NEGATIVE_INFINITY;
     let maxZ = Number.NEGATIVE_INFINITY;
     for (const f of centerFrames) {
+      if (!isFiniteVec3Like(f.position)) continue;
       minX = Math.min(minX, f.position.x);
       minY = Math.min(minY, f.position.y);
       minZ = Math.min(minZ, f.position.z);
       maxX = Math.max(maxX, f.position.x);
       maxY = Math.max(maxY, f.position.y);
       maxZ = Math.max(maxZ, f.position.z);
+    }
+    if (
+      !isFiniteNumber(minX) || !isFiniteNumber(minY) || !isFiniteNumber(minZ) ||
+      !isFiniteNumber(maxX) || !isFiniteNumber(maxY) || !isFiniteNumber(maxZ)
+    ) {
+      return 100;
     }
     return Math.max(80, Math.hypot(maxX - minX, maxY - minY, maxZ - minZ));
   }, [centerFrames]);
@@ -658,12 +915,19 @@ export function Viewer3D({
     let maxY = Number.NEGATIVE_INFINITY;
     let maxZ = Number.NEGATIVE_INFINITY;
     for (const f of centerFrames) {
+      if (!isFiniteVec3Like(f.position)) continue;
       minX = Math.min(minX, f.position.x);
       minY = Math.min(minY, f.position.y);
       minZ = Math.min(minZ, f.position.z);
       maxX = Math.max(maxX, f.position.x);
       maxY = Math.max(maxY, f.position.y);
       maxZ = Math.max(maxZ, f.position.z);
+    }
+    if (
+      !isFiniteNumber(minX) || !isFiniteNumber(minY) || !isFiniteNumber(minZ) ||
+      !isFiniteNumber(maxX) || !isFiniteNumber(maxY) || !isFiniteNumber(maxZ)
+    ) {
+      return new Vector3(0, 0, 0);
     }
     return new Vector3((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5);
   }, [centerFrames]);
@@ -793,28 +1057,39 @@ export function Viewer3D({
     if (!sameFrame) setPickedSegment(null);
   }, [currentFrame, pickedSegment]);
 
-  useEffect(() => {
-    if (!cameraState || !controlsRef.current) return;
-    controlsRef.current.minDistance = Math.max(8, sceneScale * 0.03);
-    controlsRef.current.maxDistance = Math.max(400, sceneScale * 10);
+  useLayoutEffect(() => {
+    if (isPointerDown || rotateDragRef.current.active) return;
+    if (!cameraState || !controlsRef.current || !controlsReady) return;
+    if (!isFiniteVec3Like(cameraState.position) || !isFiniteVec3Like(cameraState.target)) return;
+    const minDistance = Math.max(8, sceneScale * 0.03);
+    const maxDistance = Math.max(400, sceneScale * 10);
+    controlsRef.current.minDistance = minDistance;
+    controlsRef.current.maxDistance = maxDistance;
     const sourcePos = new Vector3(
       cameraState.position.x,
       cameraState.position.y,
       cameraState.position.z,
     );
     const sourceTarget = new Vector3(cameraState.target.x, cameraState.target.y, cameraState.target.z);
-    const absoluteTarget = frames.length > 1 ? geometryCenter.clone() : sourceTarget;
+    const absoluteTarget = sourceTarget;
     const dir = new Vector3().subVectors(sourcePos, sourceTarget);
-    const distance = Math.max(sceneScale * 0.5, dir.length());
+    // Keep camera distance consistent with OrbitControls limits only.
+    // Using a larger custom floor here causes zoom fight/jitter.
+    const distance = Math.min(maxDistance, Math.max(minDistance, dir.length()));
     const absolutePos = absoluteTarget.clone().add(
       (dir.lengthSq() > 1e-8 ? dir.normalize() : new Vector3(0, 0, 1)).multiplyScalar(distance),
     );
+    const curPos = controlsRef.current.object.position;
+    const curTarget = controlsRef.current.target;
+    const isAlreadyApplied =
+      curPos.distanceToSquared(absolutePos) < 1e-8 &&
+      curTarget.distanceToSquared(absoluteTarget) < 1e-8;
+    if (isAlreadyApplied) return;
     controlsRef.current.object.position.copy(absolutePos);
-    const up = resolveUpVector(
-      { x: absolutePos.x, y: absolutePos.y, z: absolutePos.z },
-      { x: absoluteTarget.x, y: absoluteTarget.y, z: absoluteTarget.z },
-    );
-    controlsRef.current.object.up.copy(up);
+    const forward = new Vector3().subVectors(absoluteTarget, absolutePos).normalize();
+    const nearTopOrBottom = Math.abs(forward.dot(new Vector3(0, 0, 1))) > 0.985;
+    // For strict top/bottom views, avoid up-vector singularity.
+    controlsRef.current.object.up.set(0, nearTopOrBottom ? 1 : 0, nearTopOrBottom ? 0 : 1);
     controlsRef.current.target.copy(absoluteTarget);
     controlsRef.current.object.lookAt(
       absoluteTarget.x,
@@ -823,17 +1098,7 @@ export function Viewer3D({
     );
     controlsRef.current.object.updateProjectionMatrix();
     controlsRef.current.update();
-  }, [cameraState, geometryCenter, frames.length, sceneScale]);
-
-  const cameraEmitRafRef = useRef<number | null>(null);
-  useEffect(() => {
-    return () => {
-      if (cameraEmitRafRef.current !== null) {
-        window.cancelAnimationFrame(cameraEmitRafRef.current);
-        cameraEmitRafRef.current = null;
-      }
-    };
-  }, []);
+  }, [cameraState, controlsReady, isPointerDown, sceneScale]);
 
   const isLight = theme === "light";
   const isNavy = theme === "navy";
@@ -854,22 +1119,237 @@ export function Viewer3D({
     }
     : { position: [120, 120, 120] as [number, number, number], fov: 55, near: 0.1, far: 200000 };
 
+  const applyFreeRotate = useCallback((dx: number, dy: number) => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const cam = controls.object as PerspectiveCamera;
+    const target = controls.target.clone();
+    const offset = cam.position.clone().sub(target);
+    if (offset.lengthSq() < 1e-10) return;
+
+    const yaw = -dx * 0.0082;
+    const rawPitch = -dy * 0.0082;
+    const worldUp = new Vector3(0, 0, 1);
+
+    // Yaw around global Z to keep azimuth stable.
+    if (Math.abs(yaw) > 1e-7) {
+      const qYaw = new Quaternion().setFromAxisAngle(worldUp, yaw);
+      offset.applyQuaternion(qYaw);
+    }
+
+    // Pitch around view-right axis derived from current orbit offset (stable near poles).
+    const forward = offset.clone().normalize().negate();
+    let right = new Vector3().crossVectors(forward, worldUp);
+    if (right.lengthSq() < 1e-10) {
+      right.copy(rotateRightAxisRef.current);
+    } else {
+      right.normalize();
+      rotateRightAxisRef.current.copy(right);
+    }
+    const pitch = right.lengthSq() > 1e-10
+      ? clampPitchAwayFromPole(offset, right, rawPitch)
+      : 0;
+    if (Math.abs(pitch) > 1e-7 && right.lengthSq() > 1e-10) {
+      const qPitch = new Quaternion().setFromAxisAngle(right, pitch);
+      offset.applyQuaternion(qPitch);
+    }
+
+    cam.position.copy(target.clone().add(offset));
+    // Keep a stable world-up to avoid camera up-vector oscillation near pole.
+    cam.up.set(0, 0, 1);
+    cam.lookAt(target);
+    cam.updateProjectionMatrix();
+    controls.update();
+  }, []);
+
+  const stopRotateLoop = useCallback(() => {
+    if (rotateRafRef.current) {
+      window.cancelAnimationFrame(rotateRafRef.current);
+      rotateRafRef.current = 0;
+    }
+    rotateDeltaRef.current.dx = 0;
+    rotateDeltaRef.current.dy = 0;
+  }, []);
+
+  const startRotateLoop = useCallback(() => {
+    if (rotateRafRef.current) return;
+    const tick = () => {
+      rotateRafRef.current = 0;
+      const { dx, dy } = rotateDeltaRef.current;
+      const hasDelta = Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001;
+      if (hasDelta) {
+        const stepX = dx * 0.72;
+        const stepY = dy * 0.72;
+        rotateDeltaRef.current.dx -= stepX;
+        rotateDeltaRef.current.dy -= stepY;
+        applyFreeRotate(stepX, stepY);
+      }
+      if (
+        rotateDragRef.current.active ||
+        Math.abs(rotateDeltaRef.current.dx) > 0.001 ||
+        Math.abs(rotateDeltaRef.current.dy) > 0.001
+      ) {
+        rotateRafRef.current = window.requestAnimationFrame(tick);
+      }
+    };
+    rotateRafRef.current = window.requestAnimationFrame(tick);
+  }, [applyFreeRotate]);
+
+  useEffect(() => {
+    const resetRotateState = () => {
+      let changed = false;
+      if (rotateDragRef.current.active) {
+        rotateDragRef.current.active = false;
+        rotateDragRef.current.pointerId = -1;
+        if (controlsRef.current) controlsRef.current.enabled = true;
+        changed = true;
+      }
+      if (gizmoDragRef.current.active) {
+        gizmoDragRef.current.active = false;
+        gizmoDragRef.current.pointerId = -1;
+        changed = true;
+      }
+      if (!changed) return;
+      setIsPointerDown(false);
+      stopRotateLoop();
+    };
+    window.addEventListener("pointerup", resetRotateState);
+    window.addEventListener("pointercancel", resetRotateState);
+    window.addEventListener("blur", resetRotateState);
+    return () => {
+      window.removeEventListener("pointerup", resetRotateState);
+      window.removeEventListener("pointercancel", resetRotateState);
+      window.removeEventListener("blur", resetRotateState);
+      stopRotateLoop();
+    };
+  }, [stopRotateLoop]);
+
+  const emitCameraState = useCallback((viewName: CameraState["viewName"] = "Custom") => {
+    if (!onCameraStateChange || !controlsRef.current) return;
+    const controls = controlsRef.current;
+    onCameraStateChange({
+      target: {
+        x: controls.target.x,
+        y: controls.target.y,
+        z: controls.target.z,
+      },
+      position: {
+        x: controls.object.position.x,
+        y: controls.object.position.y,
+        z: controls.object.position.z,
+      },
+      zoom: 1,
+      viewName,
+    });
+  }, [onCameraStateChange]);
+
+
   return (
     <div
       className={`viewer-canvas-wrap mode-${interactionMode}${isPointerDown ? " dragging" : ""}${isPickTargetHovered ? " pick-hover" : ""}`}
       tabIndex={0}
+      onPointerDownCapture={(e) => {
+        if (e.button !== 2) return;
+        e.preventDefault();
+        e.stopPropagation();
+        (e.currentTarget as HTMLDivElement).focus();
+        onViewerHotkeyScopeChange?.(true);
+        setIsPointerDown(true);
+        rotateDragRef.current = {
+          active: true,
+          pointerId: e.pointerId,
+          lastX: e.clientX,
+          lastY: e.clientY,
+        };
+        rotateDeltaRef.current.dx = 0;
+        rotateDeltaRef.current.dy = 0;
+        if (controlsRef.current) controlsRef.current.enabled = false;
+        try {
+          (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+        } catch {
+          // noop
+        }
+      }}
+      onPointerMoveCapture={(e) => {
+        if (!rotateDragRef.current.active || rotateDragRef.current.pointerId !== e.pointerId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if ((e.buttons & 2) === 0) {
+          rotateDragRef.current.active = false;
+          rotateDragRef.current.pointerId = -1;
+          if (controlsRef.current) controlsRef.current.enabled = true;
+          setIsPointerDown(false);
+          stopRotateLoop();
+          return;
+        }
+        const dx = e.clientX - rotateDragRef.current.lastX;
+        const dy = e.clientY - rotateDragRef.current.lastY;
+        rotateDragRef.current.lastX = e.clientX;
+        rotateDragRef.current.lastY = e.clientY;
+        rotateDeltaRef.current.dx += dx;
+        rotateDeltaRef.current.dy += dy;
+        startRotateLoop();
+      }}
+      onPointerUpCapture={(e) => {
+        if (!rotateDragRef.current.active || rotateDragRef.current.pointerId !== e.pointerId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        rotateDragRef.current.active = false;
+        rotateDragRef.current.pointerId = -1;
+        if (controlsRef.current) controlsRef.current.enabled = true;
+        setIsPointerDown(false);
+        stopRotateLoop();
+        try {
+          (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+        } catch {
+          // noop
+        }
+        if (onCameraStateChange && controlsRef.current) emitCameraState("Custom");
+      }}
       onPointerDown={(e) => {
         setIsPointerDown(true);
         // Keyboard shortcuts should only be active when the 3D viewport is focused.
         (e.currentTarget as HTMLDivElement).focus();
         onViewerHotkeyScopeChange?.(true);
       }}
-      onPointerUp={() => setIsPointerDown(false)}
-      onPointerCancel={() => setIsPointerDown(false)}
+      onPointerMove={(e) => {
+        if (rotateDragRef.current.active && rotateDragRef.current.pointerId === e.pointerId) return;
+      }}
+      onPointerUp={(e) => {
+        if (rotateDragRef.current.active && rotateDragRef.current.pointerId === e.pointerId) return;
+        setIsPointerDown(false);
+        if (rotateDragRef.current.active && rotateDragRef.current.pointerId === e.pointerId) {
+          e.stopPropagation();
+          rotateDragRef.current.active = false;
+          rotateDragRef.current.pointerId = -1;
+          if (controlsRef.current) controlsRef.current.enabled = true;
+          try {
+            (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+          } catch {
+            // noop
+          }
+        }
+        if (onCameraStateChange && controlsRef.current) emitCameraState("Custom");
+      }}
+      onPointerCancel={(e) => {
+        setIsPointerDown(false);
+        if (rotateDragRef.current.active && rotateDragRef.current.pointerId === e.pointerId) {
+          rotateDragRef.current.active = false;
+          rotateDragRef.current.pointerId = -1;
+          if (controlsRef.current) controlsRef.current.enabled = true;
+          stopRotateLoop();
+        }
+      }}
       onFocus={() => onViewerHotkeyScopeChange?.(true)}
       onBlur={() => onViewerHotkeyScopeChange?.(false)}
       onPointerLeave={() => {
         setIsPointerDown(false);
+        if (rotateDragRef.current.active) {
+          rotateDragRef.current.active = false;
+          rotateDragRef.current.pointerId = -1;
+          if (controlsRef.current) controlsRef.current.enabled = true;
+          stopRotateLoop();
+        }
         clearHoverTooltip();
       }}
       onContextMenu={(e) => e.preventDefault()}
@@ -903,7 +1383,23 @@ export function Viewer3D({
           />
         )}
         <axesHelper args={[120]} />
-        <ViewportCenterOnResize controlsRef={controlsRef} sceneRadius={sceneScale * 0.5} enabled={frames.length > 1} />
+        <ViewportCenterOnResize
+          controlsRef={controlsRef}
+          sceneRadius={sceneScale * 0.5}
+          focusCenter={geometryCenter}
+          enabled={fitOnResize && frames.length > 1}
+          fitScale={0.98}
+        />
+        <ProgrammaticTopRefocus
+          controlsRef={controlsRef}
+          sceneRadius={sceneScale * 0.5}
+          focusCenter={geometryCenter}
+          nonce={refocusNonce}
+          enabled={frames.length > 1}
+          fitScale={0.98}
+          onApplied={onCameraStateChange}
+          onDone={onRefocusApplied}
+        />
         <group>
           {renderCutPoints.length > 1 && <Line points={renderCutPoints} color={lineColor} lineWidth={1.8} segments />}
           {showRapidPath && renderRapidPoints.length > 1 && (
@@ -932,7 +1428,7 @@ export function Viewer3D({
           fullSegments={fullPickSegments}
           cutSegments={segmentData.cutSegments}
           rapidSegments={showRapidPath ? segmentData.rapidSegments : []}
-          enabled
+          enabled={!isPointerDown}
           sceneScale={sceneScale}
           focusCenter={geometryCenter}
           onHoverStateChange={setIsPickTargetHovered}
@@ -952,48 +1448,121 @@ export function Viewer3D({
         />
 
         <OrbitControls
-          ref={controlsRef}
+          ref={(ctrl) => {
+            controlsRef.current = ctrl;
+            if (ctrl && !controlsReady) setControlsReady(true);
+            if (ctrl && cameraState && isFiniteVec3Like(cameraState.position) && isFiniteVec3Like(cameraState.target)) {
+              const absolutePos = new Vector3(
+                cameraState.position.x,
+                cameraState.position.y,
+                cameraState.position.z,
+              );
+              const absoluteTarget = new Vector3(
+                cameraState.target.x,
+                cameraState.target.y,
+                cameraState.target.z,
+              );
+              ctrl.object.position.copy(absolutePos);
+              const forward = new Vector3().subVectors(absoluteTarget, absolutePos).normalize();
+              const nearTopOrBottom = Math.abs(forward.dot(new Vector3(0, 0, 1))) > 0.985;
+              ctrl.object.up.set(0, nearTopOrBottom ? 1 : 0, nearTopOrBottom ? 0 : 1);
+              ctrl.target.copy(absoluteTarget);
+              ctrl.object.lookAt(absoluteTarget);
+              ctrl.object.updateProjectionMatrix();
+              ctrl.update();
+            }
+          }}
           makeDefault
           enabled
           enablePan
-          enableRotate
+          enableRotate={false}
           enableZoom
           enableDamping={false}
           dampingFactor={0}
-          rotateSpeed={1.6}
+          rotateSpeed={2.35}
           panSpeed={1.0}
           zoomSpeed={0.9}
-          minPolarAngle={0.0001}
-          maxPolarAngle={Math.PI - 0.0001}
+          minPolarAngle={0}
+          maxPolarAngle={Math.PI}
           minAzimuthAngle={-Infinity}
           maxAzimuthAngle={Infinity}
           screenSpacePanning
           mouseButtons={{ LEFT: MOUSE.PAN, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.ROTATE }}
-          onChange={() => {
-            if (!onCameraStateChange || !controlsRef.current) return;
-            if (cameraEmitRafRef.current !== null) return;
-            cameraEmitRafRef.current = window.requestAnimationFrame(() => {
-              cameraEmitRafRef.current = null;
-              const controls = controlsRef.current;
-              if (!controls) return;
-              onCameraStateChange({
-                target: {
-                  x: controls.target.x,
-                  y: controls.target.y,
-                  z: controls.target.z,
-                },
-                position: {
-                  x: controls.object.position.x,
-                  y: controls.object.position.y,
-                  z: controls.object.position.z,
-                },
-                zoom: 1,
-                viewName: cameraState?.viewName ?? "Custom",
-              });
-            });
+          onEnd={() => {
+            emitCameraState("Custom");
           }}
         />
       </Canvas>
+      {showOrientationGizmo && (
+        <div
+          className={`viewer-orient-gizmo viewer-orient-${theme}`}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            gizmoDragRef.current = {
+              active: true,
+              pointerId: e.pointerId,
+              lastX: e.clientX,
+              lastY: e.clientY,
+            };
+            setIsPointerDown(true);
+            try {
+              (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+            } catch {
+              // noop
+            }
+          }}
+          onPointerMove={(e) => {
+            if (!gizmoDragRef.current.active || gizmoDragRef.current.pointerId !== e.pointerId) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const dx = e.clientX - gizmoDragRef.current.lastX;
+            const dy = e.clientY - gizmoDragRef.current.lastY;
+            gizmoDragRef.current.lastX = e.clientX;
+            gizmoDragRef.current.lastY = e.clientY;
+            rotateDeltaRef.current.dx += dx;
+            rotateDeltaRef.current.dy += dy;
+            startRotateLoop();
+          }}
+          onPointerUp={(e) => {
+            if (!gizmoDragRef.current.active || gizmoDragRef.current.pointerId !== e.pointerId) return;
+            e.preventDefault();
+            e.stopPropagation();
+            gizmoDragRef.current.active = false;
+            gizmoDragRef.current.pointerId = -1;
+            setIsPointerDown(false);
+            try {
+              (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+            } catch {
+              // noop
+            }
+            if (onCameraStateChange && controlsRef.current) emitCameraState("Custom");
+          }}
+          onPointerCancel={(e) => {
+            if (!gizmoDragRef.current.active || gizmoDragRef.current.pointerId !== e.pointerId) return;
+            gizmoDragRef.current.active = false;
+            gizmoDragRef.current.pointerId = -1;
+            setIsPointerDown(false);
+          }}
+        >
+          <Canvas
+            orthographic
+            camera={{ position: [0, 0, 5.2], zoom: 50 }}
+            gl={{ antialias: true, alpha: true }}
+            dpr={[1, 1.5]}
+          >
+            <GlobeOrientationGizmo
+              controlsRef={controlsRef}
+              theme={theme}
+              onAxisClick={(axis) => {
+                if (axis === "X") onRequestNamedView?.("Right");
+                if (axis === "Y") onRequestNamedView?.("Front");
+                if (axis === "Z") onRequestNamedView?.("Top");
+              }}
+            />
+          </Canvas>
+        </div>
+      )}
       {showPathTooltip && hoverTooltip && hoverInfo && (
         <div
           className="path-hover-tooltip"

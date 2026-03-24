@@ -62,6 +62,7 @@ type ShortcutId =
   | "zoomIn"
   | "zoomOut"
   | "toggleGrid"
+  | "toggleGizmo"
   | "toggleRapidPath"
   | "pathPrev"
   | "pathNext";
@@ -80,6 +81,7 @@ const STORAGE_SHOW_VIEWER_KEY = "fnc.showViewer";
 const STORAGE_FILES_WIDTH_KEY = "fnc.filesWidth";
 const STORAGE_EDITOR_WIDTH_KEY = "fnc.editorWidth";
 const STORAGE_SHOW_GRID_KEY = "fnc.showGrid";
+const STORAGE_SHOW_GIZMO_KEY = "fnc.showGizmo";
 const STORAGE_RECENT_FILES_KEY = "fnc.recentFiles";
 const STORAGE_SHORTCUTS_KEY = "fnc.shortcuts";
 
@@ -93,6 +95,7 @@ const defaultShortcuts: ShortcutMap = {
   zoomIn: "+",
   zoomOut: "-",
   toggleGrid: "G",
+  toggleGizmo: "O",
   toggleRapidPath: "H",
   pathPrev: "ArrowUp",
   pathNext: "ArrowDown",
@@ -223,7 +226,7 @@ function fitDistanceForView(frames: FrameState[], viewName: string): number {
   const minHalfFov = Math.max(0.08, Math.min(vFov / 2, hFovConservative / 2));
   const dSphere = radius / Math.sin(minHalfFov);
   const invTan = 1 / Math.tan(vFov / 2);
-  const m = 1.7; // extra headroom to guarantee full-fit after panel/layout changes
+  const m = 1.16; // fuller fit with minimal margin
 
   if (viewName === "Top" || viewName === "Bottom") {
     return Math.max(120, Math.max(sx, sy) * 0.5 * invTan * m);
@@ -432,6 +435,7 @@ function App() {
   const { t, i18n } = useTranslation();
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
+  const editorCursorListenerRef = useRef<Monaco.IDisposable | null>(null);
   const decoRef = useRef<string[]>([]);
   const parseDebounceRef = useRef<number | null>(null);
   const suppressCursorSyncRef = useRef(false);
@@ -443,6 +447,7 @@ function App() {
   const launchFileHandledRef = useRef(false);
   const recentRestoreHandledRef = useRef(false);
   const allowWindowCloseRef = useRef(false);
+  const suppressCameraFeedbackUntilRef = useRef(0);
   const initialPanePrefs = (() => {
     const filesSaved = localStorage.getItem(STORAGE_SHOW_FILES_KEY);
     const editorSaved = localStorage.getItem(STORAGE_SHOW_EDITOR_KEY);
@@ -507,12 +512,17 @@ function App() {
   });
   const [isPlaying, setIsPlaying] = useState(false);
   const [playProgress, setPlayProgress] = useState(0);
+  const [refocusNonce, setRefocusNonce] = useState(0);
   const [showRapidPath, setShowRapidPath] = useState(true);
   const [showGrid, setShowGrid] = useState(() => {
     const saved = localStorage.getItem(STORAGE_SHOW_GRID_KEY);
     return saved == null ? true : saved === "true";
   });
   const [showPathTooltip, setShowPathTooltip] = useState(true);
+  const [showOrientationGizmo, setShowOrientationGizmo] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_SHOW_GIZMO_KEY);
+    return saved == null ? true : saved === "true";
+  });
   const [viewerHotkeyScope, setViewerHotkeyScope] = useState(false);
   const [status, setStatus] = useState(t("ready"));
   const [showShortcutModal, setShowShortcutModal] = useState(false);
@@ -559,6 +569,7 @@ function App() {
     { id: "zoomIn", label: t("zoomIn") },
     { id: "zoomOut", label: t("zoomOut") },
     { id: "toggleGrid", label: t("toggleGrid") },
+    { id: "toggleGizmo", label: t("toggleGizmo") },
     { id: "toggleRapidPath", label: t("hideRapidPath") },
     { id: "pathPrev", label: t("stepPrev") },
     { id: "pathNext", label: t("stepNext") },
@@ -640,6 +651,19 @@ function App() {
     const raw = codeLines[Math.max(0, currentFrame.lineNumber - 1)] ?? "";
     return raw.trim() || "-";
   }, [codeLines, currentFrame]);
+  const legendTooltipText = useMemo(() => {
+    const parts = [
+      `${t("legendLineNo")}: ${currentFrame?.lineNumber ?? "-"}`,
+      t("legendLine"),
+      t("legendCurve"),
+      t("legendRapid"),
+      t("legendPlunge"),
+      t("legendSelected"),
+    ];
+    if (ncMode === "laser") parts.push(t("legendUvw"));
+    parts.push(`${t("currentCode")}: ${currentNcLineText}`);
+    return parts.join(" | ");
+  }, [currentFrame?.lineNumber, currentNcLineText, ncMode, t]);
 
   useEffect(() => {
     framesRef.current = frames;
@@ -660,6 +684,7 @@ function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_SHOW_VIEWER_KEY, String(showViewer));
   }, [showViewer]);
+
   useEffect(() => {
     localStorage.setItem(STORAGE_FILES_WIDTH_KEY, String(Math.round(filesWidth)));
   }, [filesWidth]);
@@ -675,6 +700,9 @@ function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_SHOW_GRID_KEY, String(showGrid));
   }, [showGrid]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_SHOW_GIZMO_KEY, String(showOrientationGizmo));
+  }, [showOrientationGizmo]);
   useEffect(() => {
     if (activeFile) setSelectedFilePath(activeFile);
   }, [activeFile]);
@@ -752,13 +780,27 @@ function App() {
 
   const toggleViewerPane = useCallback(() => {
     if (showViewer && !showFiles && !showEditor) return;
-    setShowViewer((v) => !v);
-  }, [showEditor, showFiles, showViewer]);
+    if (!showViewer) {
+      // Render first frame directly at default view center.
+      suppressCameraFeedbackUntilRef.current = performance.now() + 480;
+      setRefocusNonce(0);
+      setCameraState(frames.length > 1 ? cameraForView(frames, "Top") : null);
+      setShowViewer(true);
+      return;
+    }
+    setShowViewer(false);
+  }, [frames, showEditor, showFiles, showViewer]);
 
   const applyLoadedProgram = useCallback((result: ParseResult) => {
     const detectedMode = detectNcMode(result.content);
     setNcMode(detectedMode);
     const nextFrames = parseNcToFrames(result.content, detectedMode);
+    setIsPlaying(false);
+    setInteractionMode("pan");
+    // Render directly at default view center (no recenter animation).
+    suppressCameraFeedbackUntilRef.current = performance.now() + 520;
+    setRefocusNonce(0);
+    setCameraState(nextFrames.length > 1 ? cameraForView(nextFrames, "Top") : null);
     setParseResult(result);
     setCode(result.content);
     setLastSavedContent(result.content);
@@ -767,7 +809,6 @@ function App() {
     updatePlayProgress(0, true);
     setHoverFrame(null);
     setPathNavActive(false);
-    setCameraState(cameraForView(nextFrames, "Top"));
     setStatus(`${t("loaded")}: ${result.fileName} (${nextFrames.length} pts)`);
   }, [t, updatePlayProgress]);
 
@@ -951,7 +992,8 @@ function App() {
     } else {
       monaco.editor.setTheme("nc-x-dark");
     }
-    editor.onDidChangeCursorPosition((e) => {
+    editorCursorListenerRef.current?.dispose();
+    editorCursorListenerRef.current = editor.onDidChangeCursorPosition((e) => {
       if (suppressCursorSyncRef.current) return;
       const target = frameForLine(framesRef.current, e.position.lineNumber);
       if (!target) return;
@@ -964,6 +1006,13 @@ function App() {
       });
     });
   };
+
+  useEffect(() => {
+    return () => {
+      editorCursorListenerRef.current?.dispose();
+      editorCursorListenerRef.current = null;
+    };
+  }, []);
 
   const localizeMonacoFindWidget = useCallback(() => {
     const root = editorRef.current?.getDomNode();
@@ -1047,6 +1096,7 @@ function App() {
 
   const setView = async (name: string) => {
     if (frames.length) {
+      suppressCameraFeedbackUntilRef.current = performance.now() + 260;
       setCameraState(cameraForView(frames, name));
     } else {
       const cur = currentFrame?.position ?? { x: 0, y: 0, z: 0 };
@@ -1058,6 +1108,7 @@ function App() {
         Left: { x: cur.x + d, y: cur.y, z: cur.z },
         Right: { x: cur.x - d, y: cur.y, z: cur.z },
       };
+      suppressCameraFeedbackUntilRef.current = performance.now() + 260;
       setCameraState({ target: cur, position: presets[name] ?? presets.Top, zoom: 1, viewName: name });
     }
   };
@@ -1086,6 +1137,9 @@ function App() {
 
   const refocusCenter = useCallback(() => {
     if (!frames.length) return;
+    // Hard-reset to the same initial top-view state used on file load/open.
+    suppressCameraFeedbackUntilRef.current = performance.now() + 260;
+    setRefocusNonce(0);
     setCameraState(cameraForView(frames, "Top"));
     setStatus(t("refocused"));
   }, [frames, t]);
@@ -1137,13 +1191,15 @@ function App() {
         shortcuts.zoomIn,
         shortcuts.zoomOut,
         shortcuts.toggleGrid,
+        shortcuts.toggleGizmo,
         shortcuts.toggleRapidPath,
         shortcuts.pathPrev,
         shortcuts.pathNext,
       ].includes(pressed);
       if (is3DAction && !viewerHotkeyScope) return;
 
-      if (pressed === shortcuts.refocus) {
+      // Always keep plain "F" available as a hard fallback for refocus.
+      if (pressed === shortcuts.refocus || (!e.ctrlKey && !e.altKey && !e.metaKey && key === "f")) {
         e.preventDefault();
         refocusCenter();
         return;
@@ -1171,6 +1227,11 @@ function App() {
       if (pressed === shortcuts.toggleGrid) {
         e.preventDefault();
         setShowGrid((v) => !v);
+        return;
+      }
+      if (pressed === shortcuts.toggleGizmo) {
+        e.preventDefault();
+        setShowOrientationGizmo((v) => !v);
         return;
       }
       if (pressed === shortcuts.toggleRapidPath) {
@@ -1258,22 +1319,13 @@ function App() {
         const saved = await saveCurrentFile();
         if (saved) {
           allowWindowCloseRef.current = true;
-          try {
-            await appWindow.close();
-          } catch {
-            // Fallback for stale listeners/permissions in dev hot-reload sessions.
-            await appWindow.destroy();
-          }
+          await appWindow.close();
         }
         return;
       }
       if (choice === discardLabel) {
         allowWindowCloseRef.current = true;
-        try {
-          await appWindow.close();
-        } catch {
-          await appWindow.destroy();
-        }
+        await appWindow.close();
       }
     }).then((fn) => {
       unlisten = fn;
@@ -1402,6 +1454,13 @@ function App() {
           </button>
           <button
             className="icon-btn"
+            title={tooltipWithShortcut(showOrientationGizmo ? t("hideGizmo") : t("showGizmo"), shortcuts.toggleGizmo)}
+            onClick={() => setShowOrientationGizmo((v) => !v)}
+          >
+            <Compass size={14} />
+          </button>
+          <button
+            className="icon-btn"
             title={tooltipWithShortcut(showRapidPath ? t("hideRapidPath") : t("showRapidPath"), shortcuts.toggleRapidPath)}
             onClick={() => setShowRapidPath((v) => !v)}
           >
@@ -1432,7 +1491,12 @@ function App() {
 
         <div className="workspace-flex">
           {showFiles && (
-          <aside className="file-pane panel" style={(showEditor || showViewer) ? { flex: `0 0 ${filesWidth}px` } : { flex: "1 1 auto" }}>
+          <aside
+            className="file-pane panel"
+            style={(showEditor || showViewer)
+              ? { flex: `0 1 ${filesWidth}px`, maxWidth: `${filesWidth}px` }
+              : { flex: "1 1 auto" }}
+          >
             <h3>{t("files")}</h3>
             <div className="file-toolbar">
               <input
@@ -1504,7 +1568,12 @@ function App() {
           )}
 
           {showEditor && (
-          <section className="editor-pane panel" style={showViewer ? { flex: `0 0 ${editorWidth}px` } : { flex: "1 1 auto" }}>
+          <section
+            className="editor-pane panel"
+            style={showViewer
+              ? { flex: `0 1 ${editorWidth}px`, maxWidth: `${editorWidth}px` }
+              : { flex: "1 1 auto" }}
+          >
             <h3>{t("editor")}</h3>
             {!fallbackEditor ? (
               <Editor
@@ -1546,6 +1615,7 @@ function App() {
           <section className="viewer-pane panel" style={{ flex: "1 1 auto" }}>
             <h3>{t("viewer")}</h3>
             <Viewer3D
+              key={activeFile || parseResult?.fileName || "viewer-default"}
               frames={frames}
               codeContent={code}
               currentFrame={currentFrame}
@@ -1554,9 +1624,35 @@ function App() {
               theme={resolvedTheme}
               interactionMode={interactionMode}
               showGrid={showGrid}
+              showOrientationGizmo={showOrientationGizmo}
               showRapidPath={showRapidPath}
               showPathTooltip={showPathTooltip}
+              refocusNonce={refocusNonce}
+              onRefocusApplied={() => setRefocusNonce(0)}
+              onRequestNamedView={(view) => {
+                void setView(view);
+              }}
               onViewerHotkeyScopeChange={setViewerHotkeyScope}
+              // Keep camera stable across hide/show and file switches; avoid secondary auto-fit jitter.
+              fitOnResize={false}
+              onCameraStateChange={(next) => {
+                if (performance.now() < suppressCameraFeedbackUntilRef.current) return;
+                setCameraState((prev) => {
+                  if (!prev) return next;
+                  const dp = Math.hypot(
+                    prev.position.x - next.position.x,
+                    prev.position.y - next.position.y,
+                    prev.position.z - next.position.z,
+                  );
+                  const dt = Math.hypot(
+                    prev.target.x - next.target.x,
+                    prev.target.y - next.target.y,
+                    prev.target.z - next.target.z,
+                  );
+                  if (dp < 1e-4 && dt < 1e-4 && prev.viewName === next.viewName) return prev;
+                  return next;
+                });
+              }}
               onFrameHover={(frame) => {
                 if (pathNavActive) return;
                 setHoverFrame(frame);
@@ -1570,7 +1666,7 @@ function App() {
               }}
             />
             <div className="viewer-meta">
-              <div className="viewer-legend">
+              <div className="viewer-legend" title={legendTooltipText}>
                 <span className="legend-item"><b>{t("legendLineNo")}:</b> {currentFrame?.lineNumber ?? "-"}</span>
                 <span className="legend-item">
                   <span className="legend-dot cut" />

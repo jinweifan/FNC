@@ -12,6 +12,9 @@
   --range-fill: #38bdf8;
   --range-thumb: #0ea5e9;
   --range-thumb-ring: #ffffff;
+  --file-pane-min: 260px;
+  --editor-pane-min: 420px;
+  --viewer-pane-min: 360px;
 }
 
 :root[data-theme="navy"] {
@@ -56,6 +59,9 @@ html, body, #root { margin: 0; width: 100%; height: 100%; background: var(--bg);
   grid-template-rows: auto auto 1fr 32px;
   gap: 12px;
   padding: 18px 10px 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .menu-bar,
@@ -82,12 +88,19 @@ html, body, #root { margin: 0; width: 100%; height: 100%; background: var(--bg);
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .menu-right {
   justify-content: flex-end;
   flex-wrap: wrap;
   row-gap: 8px;
+}
+
+.menu-left {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .menu-tag {
@@ -271,9 +284,23 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
 
 .workspace-row {
   min-height: 0;
+  min-width: 0;
   display: flex;
   gap: 8px;
   position: relative;
+  overflow: hidden;
+}
+
+.app-shell.viewer-fullscreen {
+  gap: 8px;
+}
+
+.viewer-fullscreen-main {
+  min-height: 0;
+}
+
+.fs-hidden {
+  display: none !important;
 }
 
 .left-sidebar {
@@ -344,13 +371,33 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
   overflow: hidden;
 }
 
+.pane-collapsed {
+  min-width: 0 !important;
+  width: 0 !important;
+  max-width: 0 !important;
+  border: none !important;
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden !important;
+}
+
+.pane-collapsed > * {
+  visibility: hidden;
+}
+
 .file-pane {
   grid-template-rows: 32px auto 1fr;
   container-type: inline-size;
+  min-width: var(--file-pane-min);
 }
 
 .viewer-pane {
   grid-template-rows: 32px 1fr auto;
+  min-width: var(--viewer-pane-min);
+}
+
+.editor-pane {
+  min-width: var(--editor-pane-min);
 }
 
 .panel h3 {
@@ -366,6 +413,10 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
   border-radius: 10px !important;
   background: color-mix(in oklab, var(--panel) 96%, transparent) !important;
   box-shadow: 0 8px 20px color-mix(in oklab, var(--bg) 70%, black 30%) !important;
+  right: 8px !important;
+  left: auto !important;
+  max-width: calc(100% - 16px) !important;
+  width: min(560px, calc(100% - 16px)) !important;
 }
 
 .monaco-editor .find-widget .monaco-inputbox {
@@ -449,6 +500,11 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
 
 .monaco-editor .find-widget .findInSelection {
   display: none !important;
+}
+
+.monaco-editor .find-widget .find-part,
+.monaco-editor .find-widget .replace-part {
+  max-width: 100% !important;
 }
 
 .monaco-editor .find-widget .button.disabled {
@@ -537,21 +593,27 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
 
 .viewer-legend {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px 12px;
   font-size: 12px;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .legend-item {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
 .legend-current-code {
-  min-width: 180px;
-  max-width: min(52vw, 780px);
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -709,6 +771,88 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
   cursor: inherit !important;
 }
 
+.viewer-orient-gizmo {
+  position: absolute;
+  right: 26px;
+  bottom: 22px;
+  width: 142px;
+  height: 142px;
+  border-radius: 999px;
+  overflow: hidden;
+  pointer-events: auto;
+  z-index: 6;
+  backdrop-filter: blur(4px);
+}
+
+.viewer-orient-gizmo canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.orient-axis-btn {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--text) 26%, transparent);
+  background: color-mix(in oklab, var(--panel) 86%, transparent);
+  color: var(--text);
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: transform 110ms ease, background 110ms ease, border-color 110ms ease;
+}
+
+.orient-axis-btn:hover {
+  transform: translateY(-1px) scale(1.02);
+  border-color: color-mix(in oklab, var(--text) 45%, transparent);
+}
+
+.orient-axis-btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.orient-axis-x {
+  left: 98px;
+  top: 57px;
+  color: #ef4444;
+}
+
+.orient-axis-y {
+  left: 56px;
+  top: 16px;
+  color: #22c55e;
+}
+
+.orient-axis-z {
+  left: 56px;
+  top: 98px;
+  color: #3b82f6;
+}
+
+.viewer-orient-light {
+  border: 1px solid #dbe4ef;
+  background: radial-gradient(circle at 32% 28%, #ffffffdf 0%, #f1f5f9c9 60%, #e2e8f09c 100%);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
+}
+
+.viewer-orient-navy {
+  border: 1px solid #334155;
+  background: radial-gradient(circle at 30% 25%, #0b1a33f0 0%, #091427dc 58%, #040b18b8 100%);
+  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.45);
+}
+
+.viewer-orient-dark {
+  border: 1px solid #3a3f44;
+  background: radial-gradient(circle at 30% 25%, #1f242bd9 0%, #16181cd2 60%, #0f1114b8 100%);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+}
+
 .viewer-canvas-wrap.mode-select {
   cursor: crosshair;
 }
@@ -722,11 +866,15 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
 }
 
 .viewer-canvas-wrap.mode-rotate {
-  cursor: ew-resize;
+  cursor: grab;
 }
 
 .viewer-canvas-wrap.mode-rotate.dragging {
-  cursor: move;
+  cursor: grabbing;
+}
+
+.viewer-pane.fullscreen {
+  border-radius: 12px;
 }
 
 .viewer-canvas-wrap.pick-hover:not(.dragging) {
@@ -926,6 +1074,7 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
   .viewer-pane {
     flex: 1 1 auto !important;
     min-height: 260px;
+    min-width: 0 !important;
   }
   .shortcut-row {
     grid-template-columns: 1fr;
@@ -933,6 +1082,29 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
   }
   .shortcut-modal {
     padding: 14px 14px;
+  }
+
+  .monaco-editor .find-widget {
+    left: 6px !important;
+    right: 6px !important;
+    width: auto !important;
+    max-width: none !important;
+  }
+}
+
+@media (max-width: 1520px) {
+  :root {
+    --file-pane-min: 220px;
+    --editor-pane-min: 360px;
+    --viewer-pane-min: 320px;
+  }
+}
+
+@media (max-width: 1220px) {
+  :root {
+    --file-pane-min: 180px;
+    --editor-pane-min: 300px;
+    --viewer-pane-min: 260px;
   }
 }
 
