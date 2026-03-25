@@ -622,6 +622,36 @@ fn startup_theme_window_theme(theme: &str) -> Option<Theme> {
     }
 }
 
+fn apply_adaptive_window_size(app: &tauri::App) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let min_width = 980.0;
+    let min_height = 640.0;
+    let _ = window.set_min_size(Some(Size::Logical(tauri::LogicalSize::new(
+        min_width, min_height,
+    ))));
+    let _ = window.set_fullscreen(false);
+    let _ = window.unmaximize();
+
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let monitor_size = monitor.size();
+        let scale = monitor.scale_factor().max(1.0);
+        let logical_w = monitor_size.width as f64 / scale;
+        let logical_h = monitor_size.height as f64 / scale;
+
+        let max_w = (logical_w - 120.0).max(min_width);
+        let max_h = (logical_h - 120.0).max(min_height);
+        let target_w = (logical_w * 0.74).clamp(min_width, max_w);
+        let target_h = (logical_h * 0.78).clamp(min_height, max_h);
+
+        let _ = window.set_size(Size::Logical(tauri::LogicalSize::new(target_w, target_h)));
+    }
+
+    let _ = window.center();
+}
+
 #[tauri::command]
 fn list_nc_files_in_folder(folder_path: String) -> Result<Vec<NcFileItem>, String> {
     let mut files: Vec<NcFileItem> = fs::read_dir(&folder_path)
@@ -874,39 +904,6 @@ fn parse_ini_like(content: &str) -> HashMap<String, HashMap<String, String>> {
     }
 
     out
-}
-
-fn apply_adaptive_window_size(app: &tauri::App) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-
-    let min_width = 980.0;
-    let min_height = 640.0;
-    let _ = window.set_min_size(Some(Size::Logical(tauri::LogicalSize::new(
-        min_width, min_height,
-    ))));
-    let _ = window.set_fullscreen(false);
-    let _ = window.unmaximize();
-
-    if let Ok(Some(monitor)) = window.current_monitor() {
-        let monitor_size = monitor.size();
-        let scale = monitor.scale_factor().max(1.0);
-        let logical_w = monitor_size.width as f64 / scale;
-        let logical_h = monitor_size.height as f64 / scale;
-
-        // Always keep visible margins so startup doesn't look fullscreen.
-        let max_w = (logical_w - 120.0).max(min_width);
-        let max_h = (logical_h - 120.0).max(min_height);
-
-        let target_w = (logical_w * 0.74).clamp(min_width, max_w);
-        let target_h = (logical_h * 0.78).clamp(min_height, max_h);
-
-        let _ = window.set_size(Size::Logical(tauri::LogicalSize::new(target_w, target_h)));
-    }
-
-    // Always center on startup so first-open position is predictable.
-    let _ = window.center();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
