@@ -63,6 +63,16 @@ export function getDefaultShortcuts(platformLike?: string): ShortcutMap {
   };
 }
 
+export function migrateLegacyShortcutMap(shortcuts: ShortcutMap, platformLike?: string): ShortcutMap {
+  if (!isApplePlatform(platformLike)) return shortcuts;
+  const next = { ...shortcuts };
+  if (next.toggleFiles === "Alt+1") next.toggleFiles = "Meta+1";
+  if (next.toggleEditor === "Alt+2") next.toggleEditor = "Meta+2";
+  if (next.toggleViewer === "Alt+3") next.toggleViewer = "Meta+3";
+  if (next.toggleImmersiveViewer === "Alt+4") next.toggleImmersiveViewer = "Meta+4";
+  return next;
+}
+
 export function formatShortcutForDisplay(shortcut: string, isMac: boolean): string {
   if (!shortcut) return "";
   if (!isMac) return shortcut;

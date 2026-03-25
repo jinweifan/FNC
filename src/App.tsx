@@ -1,6 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { availableMonitors, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 import Editor, { loader, type OnMount } from "@monaco-editor/react";
@@ -47,6 +47,9 @@ import { splitCodeLines, toLoadedProgramState } from "./lib/loadedProgram";
 import { enterImmersivePanes, exitImmersivePanes, toggleImmersiveDrawer } from "./lib/immersiveViewer";
 import { resolveImmersiveSidebarLeft } from "./lib/immersiveSidebar";
 import { clampPaneWidth } from "./lib/paneWidths";
+import { resolveRestoredFrameIndex, sanitizeStoredWorkspaceSession, type StoredWorkspaceSession } from "./lib/workspaceSession";
+import { clampWorkspaceWindowState, sanitizeStoredWorkspaceWindowState } from "./lib/workspaceState";
+import { sanitizeToolbarPrefs } from "./lib/toolbarPrefs";
 import {
   findShortcutConflicts,
   formatShortcutForDisplay,
@@ -54,6 +57,7 @@ import {
   isApplePlatform,
   isModifierOnlyShortcut,
   keyboardEventToShortcut,
+  migrateLegacyShortcutMap,
   type ShortcutId,
   type ShortcutMap,
 } from "./lib/shortcuts";
@@ -87,6 +91,10 @@ const STORAGE_SHOW_GRID_KEY = "fnc.showGrid";
 const STORAGE_SHOW_GIZMO_KEY = "fnc.showGizmo";
 const STORAGE_RECENT_FILES_KEY = "fnc.recentFiles";
 const STORAGE_SHORTCUTS_KEY = "fnc.shortcuts";
+const STORAGE_IMMERSIVE_VIEWER_KEY = "fnc.immersiveViewer";
+const STORAGE_WINDOW_STATE_KEY = "fnc.windowState";
+const STORAGE_WORKSPACE_SESSION_KEY = "fnc.workspaceSession";
+const STORAGE_TOOLBAR_PREFS_KEY = "fnc.toolbarPrefs";
 
 
 function dirname(path: string): string {
@@ -406,9 +414,11 @@ function App() {
   const playProgressUiTsRef = useRef(0);
   const playProgressUiValueRef = useRef(0);
   const launchFileHandledRef = useRef(false);
-  const recentRestoreHandledRef = useRef(false);
+  const workspaceSessionRestoreHandledRef = useRef(false);
+  const pendingWorkspaceSessionRef = useRef<StoredWorkspaceSession | null>(null);
   const allowWindowCloseRef = useRef(false);
   const suppressCameraFeedbackUntilRef = useRef(0);
+  const workspaceWindowHydratedRef = useRef(false);
   const initialPanePrefs = (() => {
     const filesSaved = localStorage.getItem(STORAGE_SHOW_FILES_KEY);
     const editorSaved = localStorage.getItem(STORAGE_SHOW_EDITOR_KEY);
@@ -421,6 +431,27 @@ function App() {
     if (isFirstRun) return { files: false, editor: true, viewer: true, isFirstRun: true };
     if (!files && !editor && !viewer) return { files: false, editor: true, viewer: true, isFirstRun: false };
     return { files, editor, viewer, isFirstRun: false };
+  })();
+  const initialToolbarPrefs = (() => {
+    const raw = localStorage.getItem(STORAGE_TOOLBAR_PREFS_KEY);
+    const legacyShowGrid = localStorage.getItem(STORAGE_SHOW_GRID_KEY);
+    const legacyShowGizmo = localStorage.getItem(STORAGE_SHOW_GIZMO_KEY);
+    const fallback = {
+      speed: "Standard" as SpeedMode,
+      interactionMode: "pan" as InteractionMode,
+      showRapidPath: true,
+      showGrid: legacyShowGrid == null ? true : legacyShowGrid === "true",
+      showOrientationGizmo: legacyShowGizmo == null ? true : legacyShowGizmo === "true",
+      showPathTooltip: true,
+    };
+    if (!raw) {
+      return fallback;
+    }
+    try {
+      return sanitizeToolbarPrefs(JSON.parse(raw)) ?? fallback;
+    } catch {
+      return fallback;
+    }
   })();
 
   const [folderPath, setFolderPath] = useState("");
@@ -451,8 +482,8 @@ function App() {
   const [hoverFrame, setHoverFrame] = useState<FrameState | null>(null);
   const [pathNavActive, setPathNavActive] = useState(false);
   const [cameraState, setCameraState] = useState<CameraState | null>(null);
-  const [speed, setSpeed] = useState<SpeedMode>("Standard");
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>("pan");
+  const [speed, setSpeed] = useState<SpeedMode>(initialToolbarPrefs.speed);
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>(initialToolbarPrefs.interactionMode);
   const [showFiles, setShowFiles] = useState(initialPanePrefs.files);
   const [showEditor, setShowEditor] = useState(initialPanePrefs.editor);
   const [showViewer, setShowViewer] = useState(initialPanePrefs.viewer);
@@ -476,17 +507,11 @@ function App() {
   const [playProgress, setPlayProgress] = useState(0);
   const [viewerZoomRequest, setViewerZoomRequest] = useState({ nonce: 0, scale: 1 });
   const [refocusNonce, setRefocusNonce] = useState(0);
-  const [showRapidPath, setShowRapidPath] = useState(true);
-  const [showGrid, setShowGrid] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_SHOW_GRID_KEY);
-    return saved == null ? true : saved === "true";
-  });
-  const [showPathTooltip, setShowPathTooltip] = useState(true);
-  const [showOrientationGizmo, setShowOrientationGizmo] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_SHOW_GIZMO_KEY);
-    return saved == null ? true : saved === "true";
-  });
-  const [immersiveViewer, setImmersiveViewer] = useState(false);
+  const [showRapidPath, setShowRapidPath] = useState(initialToolbarPrefs.showRapidPath);
+  const [showGrid, setShowGrid] = useState(initialToolbarPrefs.showGrid);
+  const [showPathTooltip, setShowPathTooltip] = useState(initialToolbarPrefs.showPathTooltip);
+  const [showOrientationGizmo, setShowOrientationGizmo] = useState(initialToolbarPrefs.showOrientationGizmo);
+  const [immersiveViewer, setImmersiveViewer] = useState(() => localStorage.getItem(STORAGE_IMMERSIVE_VIEWER_KEY) === "true");
   const [immersiveTopChromeVisible, setImmersiveTopChromeVisible] = useState(false);
   const [viewerHotkeyScope, setViewerHotkeyScope] = useState(false);
   const [status, setStatus] = useState(t("ready"));
@@ -499,7 +524,7 @@ function App() {
     if (!raw) return defaultShortcuts;
     try {
       const parsed = JSON.parse(raw) as Partial<ShortcutMap>;
-      return { ...defaultShortcuts, ...parsed };
+      return migrateLegacyShortcutMap({ ...defaultShortcuts, ...parsed }, typeof navigator !== "undefined" ? navigator.platform : "");
     } catch {
       return defaultShortcuts;
     }
@@ -731,11 +756,38 @@ function App() {
     localStorage.setItem(STORAGE_RECENT_FILES_KEY, JSON.stringify(recentFiles.slice(0, 10)));
   }, [recentFiles]);
   useEffect(() => {
+    localStorage.setItem(
+      STORAGE_TOOLBAR_PREFS_KEY,
+      JSON.stringify({
+        speed,
+        interactionMode,
+        showRapidPath,
+        showGrid,
+        showOrientationGizmo,
+        showPathTooltip,
+      }),
+    );
     localStorage.setItem(STORAGE_SHOW_GRID_KEY, String(showGrid));
-  }, [showGrid]);
+  }, [interactionMode, showGrid, showOrientationGizmo, showPathTooltip, showRapidPath, speed]);
   useEffect(() => {
     localStorage.setItem(STORAGE_SHOW_GIZMO_KEY, String(showOrientationGizmo));
   }, [showOrientationGizmo]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_IMMERSIVE_VIEWER_KEY, String(immersiveViewer));
+  }, [immersiveViewer]);
+  useEffect(() => {
+    if (!activeFile || !loadedProgram || !frames.length) return;
+    localStorage.setItem(
+      STORAGE_WORKSPACE_SESSION_KEY,
+      JSON.stringify({
+        filePath: activeFile,
+        frameIndex: currentFrame?.index ?? 0,
+        lineNumber: currentFrame?.lineNumber ?? 1,
+        playProgress: playProgressRef.current,
+        cameraState,
+      }),
+    );
+  }, [activeFile, cameraState, currentFrame, frames.length, loadedProgram]);
   useEffect(() => {
     if (activeFile) setSelectedFilePath(activeFile);
   }, [activeFile]);
@@ -744,6 +796,86 @@ function App() {
       setSelectedFilePath(recentFiles[0].path);
     }
   }, [recentFiles, selectedFilePath]);
+  useEffect(() => {
+    if (!inTauriRuntime()) return;
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    let unlistenMoved: (() => void) | undefined;
+    let unlistenResized: (() => void) | undefined;
+
+    const persistWindowState = async () => {
+      if (disposed || !workspaceWindowHydratedRef.current) return;
+      try {
+        const [position, size, maximized] = await Promise.all([
+          appWindow.outerPosition(),
+          appWindow.outerSize(),
+          appWindow.isMaximized(),
+        ]);
+        localStorage.setItem(
+          STORAGE_WINDOW_STATE_KEY,
+          JSON.stringify({
+            x: Math.round(position.x),
+            y: Math.round(position.y),
+            width: Math.round(size.width),
+            height: Math.round(size.height),
+            maximized,
+          }),
+        );
+      } catch {
+      }
+    };
+
+    const restoreWindowState = async () => {
+      const raw = localStorage.getItem(STORAGE_WINDOW_STATE_KEY);
+      let saved = null;
+      if (raw) {
+        try {
+          saved = sanitizeStoredWorkspaceWindowState(JSON.parse(raw));
+        } catch {
+          saved = null;
+        }
+      }
+      try {
+        if (saved) {
+          const monitors = (await availableMonitors()).map((monitor) => ({
+            x: monitor.workArea.position.x,
+            y: monitor.workArea.position.y,
+            width: monitor.workArea.size.width,
+            height: monitor.workArea.size.height,
+          }));
+          const next = clampWorkspaceWindowState(saved, monitors);
+          const isCurrentlyMaximized = await appWindow.isMaximized();
+          if (isCurrentlyMaximized) {
+            await appWindow.unmaximize();
+          }
+          await appWindow.setSize(new PhysicalSize(next.width, next.height));
+          await appWindow.setPosition(new PhysicalPosition(next.x, next.y));
+          if (next.maximized) {
+            await appWindow.maximize();
+          }
+        }
+      } catch {
+      } finally {
+        workspaceWindowHydratedRef.current = true;
+        void persistWindowState();
+      }
+    };
+
+    void restoreWindowState().then(async () => {
+      unlistenMoved = await appWindow.onMoved(() => {
+        void persistWindowState();
+      });
+      unlistenResized = await appWindow.onResized(() => {
+        void persistWindowState();
+      });
+    });
+
+    return () => {
+      disposed = true;
+      unlistenMoved?.();
+      unlistenResized?.();
+    };
+  }, []);
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_LANG_KEY);
     if (saved && saved !== currentLocale) {
@@ -973,14 +1105,29 @@ function App() {
   }, [loadNcFileWithFolderContext]);
 
   useEffect(() => {
-    if (!launchProbeDone || recentRestoreHandledRef.current || activeFile || !recentFiles.length) return;
-    recentRestoreHandledRef.current = true;
-    const candidate = recentFiles[0].path;
-    setSelectedFilePath(candidate);
-    void loadNcFileWithFolderContext(candidate).catch(() => {
-      setRecentFiles((prev) => prev.filter((it) => it.path !== candidate));
+    if (!launchProbeDone || workspaceSessionRestoreHandledRef.current || activeFile) return;
+    workspaceSessionRestoreHandledRef.current = true;
+    const raw = localStorage.getItem(STORAGE_WORKSPACE_SESSION_KEY);
+    if (!raw) return;
+    let snapshot: StoredWorkspaceSession | null = null;
+    try {
+      snapshot = sanitizeStoredWorkspaceSession(JSON.parse(raw));
+    } catch {
+      snapshot = null;
+    }
+    if (!snapshot) {
+      localStorage.removeItem(STORAGE_WORKSPACE_SESSION_KEY);
+      return;
+    }
+    pendingWorkspaceSessionRef.current = snapshot;
+    setSelectedFilePath(snapshot.filePath);
+    void loadNcFileWithFolderContext(snapshot.filePath).catch(() => {
+      pendingWorkspaceSessionRef.current = null;
+      localStorage.removeItem(STORAGE_WORKSPACE_SESSION_KEY);
+      setSelectedFilePath("");
+      setStatus(t("ready"));
     });
-  }, [activeFile, launchProbeDone, loadNcFileWithFolderContext, recentFiles]);
+  }, [activeFile, launchProbeDone, loadNcFileWithFolderContext, t]);
 
   useEffect(() => {
     if (!loadedProgram) return;
@@ -1006,6 +1153,25 @@ function App() {
       if (parseDebounceRef.current) window.clearTimeout(parseDebounceRef.current);
     };
   }, [code, loadedProgram, updatePlayProgress]);
+
+  useEffect(() => {
+    const snapshot = pendingWorkspaceSessionRef.current;
+    if (!snapshot || !activeFile || snapshot.filePath !== activeFile || !frames.length) return;
+    pendingWorkspaceSessionRef.current = null;
+    const fallbackIndex = resolveRestoredFrameIndex(frames.length, snapshot);
+    const lineFrame = frameForLine(frames, snapshot.lineNumber);
+    const targetFrame = lineFrame ?? frames[fallbackIndex] ?? frames[0];
+    const safeProgress = Math.max(0, Math.min(frames.length - 1, snapshot.playProgress));
+    setIsPlaying(false);
+    setHoverFrame(null);
+    setPathNavActive(true);
+    updatePlayProgress(Number.isFinite(safeProgress) ? safeProgress : targetFrame.index, true);
+    setCurrentFrame(targetFrame);
+    if (snapshot.cameraState) {
+      suppressCameraFeedbackUntilRef.current = performance.now() + 320;
+      setCameraState(snapshot.cameraState);
+    }
+  }, [activeFile, frames, updatePlayProgress]);
 
   useEffect(() => {
     if (!isPlaying || frames.length < 2) return;
@@ -2090,6 +2256,7 @@ function App() {
             <div ref={editorHostRef} className="editor-host">
               {!fallbackEditor ? (
                 <Editor
+                  path={activeFile || loadedProgram?.filePath || "fnc://editor/current.nc"}
                   width={resolvedEditorViewport?.widthStyle ?? "100%"}
                   height={resolvedEditorViewport?.heightStyle ?? "100%"}
                   language="ncgcode"

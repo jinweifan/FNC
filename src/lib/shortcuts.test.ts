@@ -6,6 +6,7 @@ import {
   getDefaultShortcuts,
   isModifierOnlyShortcut,
   keyboardEventToShortcut,
+  migrateLegacyShortcutMap,
   normalizeShortcut,
 } from "./shortcuts.ts";
 
@@ -19,6 +20,21 @@ test("getDefaultShortcuts uses Meta digits on macOS only", () => {
 test("formatShortcutForDisplay renders Meta as Cmd on macOS", () => {
   assert.equal(formatShortcutForDisplay("Meta+1", true), "Cmd+1");
   assert.equal(formatShortcutForDisplay("Meta+1", false), "Meta+1");
+});
+
+test("migrateLegacyShortcutMap upgrades stored macOS alt digit toggles", () => {
+  const migrated = migrateLegacyShortcutMap({
+    ...getDefaultShortcuts("MacIntel"),
+    toggleFiles: "Alt+1",
+    toggleEditor: "Alt+2",
+    toggleViewer: "Alt+3",
+    toggleImmersiveViewer: "Alt+4",
+  }, "MacIntel");
+
+  assert.equal(migrated.toggleFiles, "Meta+1");
+  assert.equal(migrated.toggleEditor, "Meta+2");
+  assert.equal(migrated.toggleViewer, "Meta+3");
+  assert.equal(migrated.toggleImmersiveViewer, "Meta+4");
 });
 
 test("keyboardEventToShortcut normalizes primary combinations", () => {
