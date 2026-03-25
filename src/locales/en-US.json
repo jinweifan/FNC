@@ -1,11 +1,11 @@
 ﻿{
-  "appTitle": "FNCViewer",
+  "appTitle": "First NC Viewer",
   "openNc": "Open NC",
   "save": "Save",
   "saveAs": "Save As",
   "registerAssoc": "Associate .nc",
   "association": "File Association",
-  "assocRegistered": ".nc association registered. You can choose FNCViewer in Open with and set it as default.",
+  "assocRegistered": ".nc association registered. You can choose First NC Viewer in Open with and set it as default.",
   "assocRegisterFailed": "Failed to register file association",
   "openFolder": "Open Folder",
   "noFolder": "No folder selected",

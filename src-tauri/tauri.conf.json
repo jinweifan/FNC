@@ -1,6 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "FNCViewer",
+  "productName": "First NC Viewer",
+  "mainBinaryName": "First NC Viewer",
   "version": "0.1.0",
   "identifier": "com.fncviewer.desktop",
   "build": {
@@ -12,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "FNCViewer",
+        "title": "First NC Viewer",
         "width": 1600,
         "height": 960,
         "minWidth": 1200,
@@ -28,6 +29,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "bundleName": "First NC Viewer",
+      "infoPlist": "Info.plist"
+    },
     "linux": {
       "deb": {
         "desktopTemplate": "linux/FNCViewer.desktop",
@@ -59,5 +64,3 @@
     ]
   }
 }
-
-

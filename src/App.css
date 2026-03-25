@@ -749,6 +749,14 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
   min-width: var(--editor-pane-min);
 }
 
+.editor-host {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 .panel h3 {
   margin: 0;
   padding: 7px 10px;
@@ -824,16 +832,19 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
   background: color-mix(in oklab, var(--panel) 96%, transparent) !important;
   box-shadow: 0 8px 20px color-mix(in oklab, var(--bg) 70%, black 30%) !important;
   left: 8px !important;
-  right: 8px !important;
-  max-width: none !important;
-  width: auto !important;
+  right: auto !important;
+  max-width: min(var(--editor-find-widget-max-width, calc(100% - 16px)), calc(100% - 16px)) !important;
+  width: min(100%, var(--editor-find-widget-max-width, calc(100% - 16px))) !important;
   min-width: 0 !important;
-  overflow: hidden !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
   box-sizing: border-box !important;
+  scrollbar-width: thin;
+  white-space: nowrap !important;
 }
 
 .monaco-editor .find-widget > * {
-  min-width: 0 !important;
+  min-width: max-content !important;
 }
 
 .monaco-editor .find-widget .monaco-inputbox {
@@ -925,10 +936,10 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
 
 .monaco-editor .find-widget .find-part,
 .monaco-editor .find-widget .replace-part {
-  flex: 1 1 auto !important;
-  max-width: 100% !important;
-  min-width: 0 !important;
-  overflow: hidden !important;
+  flex: 0 0 auto !important;
+  width: max-content !important;
+  min-width: max-content !important;
+  overflow: visible !important;
 }
 
 .monaco-editor .find-widget .find-part .monaco-inputbox,
@@ -939,9 +950,8 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
 .monaco-editor .find-widget .replace-part .monaco-findInput,
 .monaco-editor .find-widget .find-part .monaco-inputbox input,
 .monaco-editor .find-widget .replace-part .monaco-inputbox input {
-  min-width: 0 !important;
-  max-width: 100% !important;
-  width: 100% !important;
+  min-width: var(--editor-find-input-min-width, 140px) !important;
+  width: max(var(--editor-find-input-min-width, 140px), 100%) !important;
   box-sizing: border-box !important;
 }
 

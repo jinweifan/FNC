@@ -11,6 +11,9 @@ use std::{
 };
 use tauri::{Emitter, Manager, Size};
 
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSProcessInfo, NSString};
+
 #[derive(Default)]
 struct AppState {
     sessions: Mutex<HashMap<u64, SimulationSessionInternal>>,
@@ -852,6 +855,9 @@ fn apply_adaptive_window_size(app: &tauri::App) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    apply_macos_process_name();
+
     let initial_launch_files = collect_launch_paths_from_args();
 
     tauri::Builder::default()
@@ -914,3 +920,9 @@ pub fn run() {
         });
 }
 
+#[cfg(target_os = "macos")]
+fn apply_macos_process_name() {
+    let process_name = NSString::from_str("First NC Viewer");
+    let process_info = NSProcessInfo::processInfo();
+    process_info.setProcessName(&process_name);
+}

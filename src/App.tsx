@@ -42,9 +42,11 @@ import {
 } from "lucide-react";
 import "./App.css";
 import { Viewer3D } from "./components/Viewer3D";
+import { resolveMeasuredEditorViewport } from "./lib/editorViewport";
 import { splitCodeLines, toLoadedProgramState } from "./lib/loadedProgram";
 import { enterImmersivePanes, exitImmersivePanes, toggleImmersiveDrawer } from "./lib/immersiveViewer";
 import { resolveImmersiveSidebarLeft } from "./lib/immersiveSidebar";
+import { clampPaneWidth } from "./lib/paneWidths";
 import {
   findShortcutConflicts,
   formatShortcutForDisplay,
@@ -391,6 +393,9 @@ function App() {
   const saveCurrentFileRef = useRef<(() => Promise<boolean>) | null>(null);
   const saveAsCurrentFileRef = useRef<(() => Promise<boolean>) | null>(null);
   const editorCursorListenerRef = useRef<Monaco.IDisposable | null>(null);
+  const editorResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const editorPaneRef = useRef<HTMLElement | null>(null);
+  const editorHostRef = useRef<HTMLDivElement | null>(null);
   const decoRef = useRef<string[]>([]);
   const parseDebounceRef = useRef<number | null>(null);
   const editorFollowResetTimerRef = useRef<number | null>(null);
@@ -466,6 +471,7 @@ function App() {
     }
     return 520;
   });
+  const [editorViewport, setEditorViewport] = useState<{ width: number; height: number } | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playProgress, setPlayProgress] = useState(0);
   const [viewerZoomRequest, setViewerZoomRequest] = useState({ nonce: 0, scale: 1 });
@@ -782,24 +788,25 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const immersivePaneCap = Math.max(280, Math.floor((viewportWidth - 180) / 3));
     const onMove = (e: PointerEvent) => {
       if (!dragState.current) return;
       const diff = e.clientX - dragState.current.startX;
       if (dragState.current.pane === "files") {
         const nextWidth = dragState.current.startWidth + diff;
-        setFilesWidth(
-          immersiveViewer
-            ? Math.max(Math.min(280, Math.min(520, immersivePaneCap)), Math.min(Math.min(520, immersivePaneCap), nextWidth))
-            : Math.max(160, Math.min(600, nextWidth)),
-        );
+        setFilesWidth(clampPaneWidth({
+          pane: "files",
+          immersive: immersiveViewer,
+          viewportWidth,
+          requested: nextWidth,
+        }));
       } else {
         const nextWidth = dragState.current.startWidth + diff;
-        setEditorWidth(
-          immersiveViewer
-            ? Math.max(Math.min(360, Math.min(680, immersivePaneCap)), Math.min(Math.min(680, immersivePaneCap), nextWidth))
-            : Math.max(320, Math.min(1400, nextWidth)),
-        );
+        setEditorWidth(clampPaneWidth({
+          pane: "editor",
+          immersive: immersiveViewer,
+          viewportWidth,
+          requested: nextWidth,
+        }));
       }
     };
     const onUp = () => {
@@ -1107,6 +1114,8 @@ function App() {
     return () => {
       editorCursorListenerRef.current?.dispose();
       editorCursorListenerRef.current = null;
+      editorResizeObserverRef.current?.disconnect();
+      editorResizeObserverRef.current = null;
     };
   }, []);
 
@@ -1127,9 +1136,20 @@ function App() {
     setLabel(".find-widget > .button.codicon-widget-close", t("close"));
   }, [t]);
 
+  const syncMonacoFindWidgetLayout = useCallback(() => {
+    const host = editorHostRef.current;
+    const root = editorRef.current?.getDomNode();
+    if (!root || !host) return;
+    const nextWidth = Math.max(180, Math.floor(host.clientWidth - 16));
+    const nextInputMinWidth = Math.max(120, Math.min(220, Math.floor((nextWidth - 168) / 2)));
+    root.style.setProperty("--editor-find-widget-max-width", `${nextWidth}px`);
+    root.style.setProperty("--editor-find-input-min-width", `${nextInputMinWidth}px`);
+  }, []);
+
   useEffect(() => {
     if (!editorReady) return;
     localizeMonacoFindWidget();
+    syncMonacoFindWidgetLayout();
     const root = editorRef.current?.getDomNode();
     if (!root) return;
     const observer = new MutationObserver(() => {
@@ -1137,7 +1157,59 @@ function App() {
     });
     observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
     return () => observer.disconnect();
-  }, [currentLocale, editorReady, localizeMonacoFindWidget]);
+  }, [currentLocale, editorReady, localizeMonacoFindWidget, syncMonacoFindWidgetLayout]);
+
+  useEffect(() => {
+    if (!editorReady) return;
+    const host = editorHostRef.current;
+    if (!host) return;
+    editorResizeObserverRef.current?.disconnect();
+    const observer = new ResizeObserver(() => {
+      const nextViewport = resolveMeasuredEditorViewport({
+        width: host.clientWidth,
+        height: host.clientHeight,
+      });
+      setEditorViewport((prev) => {
+        if (!nextViewport) return prev;
+        if (prev && prev.width === nextViewport.width && prev.height === nextViewport.height) return prev;
+        return { width: nextViewport.width, height: nextViewport.height };
+      });
+      syncMonacoFindWidgetLayout();
+    });
+    observer.observe(host);
+    editorResizeObserverRef.current = observer;
+    const initialViewport = resolveMeasuredEditorViewport({
+      width: host.clientWidth,
+      height: host.clientHeight,
+    });
+    if (initialViewport) {
+      setEditorViewport({ width: initialViewport.width, height: initialViewport.height });
+    }
+    syncMonacoFindWidgetLayout();
+    return () => {
+      observer.disconnect();
+      if (editorResizeObserverRef.current === observer) {
+        editorResizeObserverRef.current = null;
+      }
+    };
+  }, [editorReady, syncMonacoFindWidgetLayout]);
+
+  useEffect(() => {
+    if (!editorReady || !showEditor || !editorViewport) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    let rafId = 0;
+    rafId = window.requestAnimationFrame(() => {
+      editor.layout({
+        width: editorViewport.width,
+        height: editorViewport.height,
+      });
+      editor.render(true);
+    });
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [editorReady, editorViewport, showEditor]);
 
   const startSimulation = async () => {
     if (!frames.length) return;
@@ -1643,27 +1715,39 @@ function App() {
   const showImmersiveFilesPane = immersiveViewer || showFiles;
   const showImmersiveEditorPane = immersiveViewer || showEditor;
   const showImmersiveViewerPane = immersiveViewer || showViewer;
-  const immersivePaneCap = Math.max(280, Math.floor((viewportWidth - 180) / 3));
-  const immersiveViewportCap = Math.max(280, Math.floor(viewportWidth * 0.33));
-  const immersiveFilesBaseWidth = Math.max(
-    Math.min(280, Math.min(520, immersivePaneCap)),
-    Math.min(Math.min(520, immersivePaneCap), filesWidth),
-  );
-  const immersiveEditorBaseWidth = Math.max(
-    Math.min(360, Math.min(680, immersivePaneCap)),
-    Math.min(Math.min(680, immersivePaneCap), editorWidth),
-  );
-  const immersiveFilesWidth = Math.min(immersiveFilesBaseWidth, immersiveViewportCap);
-  const immersiveEditorWidth = Math.min(immersiveEditorBaseWidth, immersiveViewportCap);
+  const normalFilesWidth = clampPaneWidth({
+    pane: "files",
+    immersive: false,
+    viewportWidth,
+    requested: filesWidth,
+  });
+  const normalEditorWidth = clampPaneWidth({
+    pane: "editor",
+    immersive: false,
+    viewportWidth,
+    requested: editorWidth,
+  });
+  const immersiveFilesWidth = clampPaneWidth({
+    pane: "files",
+    immersive: true,
+    viewportWidth,
+    requested: filesWidth,
+  });
+  const immersiveEditorWidth = clampPaneWidth({
+    pane: "editor",
+    immersive: true,
+    viewportWidth,
+    requested: editorWidth,
+  });
   const immersiveFilePaneStyle: CSSProperties = immersiveViewer
     ? { width: `${immersiveFilesWidth}px`, maxWidth: `${immersiveFilesWidth}px` }
     : ((showEditor || showViewer)
-      ? { flex: `0 1 ${filesWidth}px`, maxWidth: `${filesWidth}px` }
+      ? { flex: `0 1 ${normalFilesWidth}px`, maxWidth: `${normalFilesWidth}px` }
       : { flex: "1 1 auto" });
   const immersiveEditorPaneStyle: CSSProperties = immersiveViewer
     ? { width: `${immersiveEditorWidth}px`, maxWidth: `${immersiveEditorWidth}px` }
     : (showViewer
-      ? { flex: `0 1 ${editorWidth}px`, maxWidth: `${editorWidth}px` }
+      ? { flex: `0 1 ${normalEditorWidth}px`, maxWidth: `${normalEditorWidth}px` }
       : { flex: "1 1 auto" });
   const [measuredImmersiveFilesWidth, setMeasuredImmersiveFilesWidth] = useState(immersiveFilesWidth);
   const [measuredImmersiveEditorWidth, setMeasuredImmersiveEditorWidth] = useState(immersiveEditorWidth);
@@ -1695,6 +1779,7 @@ function App() {
       "--immersive-top-right-safe": "84px",
     }
     : undefined;
+  const resolvedEditorViewport = editorViewport ? resolveMeasuredEditorViewport(editorViewport) : null;
   const shortcutButtonTooltip = tooltipWithShortcut(t("shortcuts"), shortcuts.openShortcuts);
   const filesButtonTooltip = tooltipWithShortcut(t("toggleFiles"), shortcuts.toggleFiles);
   const editorButtonTooltip = tooltipWithShortcut(t("toggleEditor"), shortcuts.toggleEditor);
@@ -1980,50 +2065,78 @@ function App() {
             <div
               className="splitter immersive-splitter"
               style={immersiveFilesSplitterStyle}
-              onPointerDown={(e) => startDrag(e, "files", filesWidth)}
+              onPointerDown={(e) => startDrag(e, "files", effectiveImmersiveFilesWidth)}
             />
           )}
 
           {!immersiveViewer && showFiles && (showEditor || showViewer) && (
-            <div className="splitter" onPointerDown={(e) => startDrag(e, "files", filesWidth)} />
+            <div className="splitter" onPointerDown={(e) => startDrag(e, "files", normalFilesWidth)} />
           )}
 
           {showImmersiveEditorPane && (
           <section
-            ref={immersiveViewer ? immersiveEditorPaneRef : undefined}
+            ref={(node) => {
+              editorPaneRef.current = node;
+              if (immersiveViewer) {
+                immersiveEditorPaneRef.current = node;
+              } else if (immersiveEditorPaneRef.current === node) {
+                immersiveEditorPaneRef.current = null;
+              }
+            }}
             className={`editor-pane panel${immersiveViewer ? " immersive-drawer immersive-drawer-editor" : ""}${immersiveViewer && !showEditor ? " immersive-drawer-hidden" : ""}`}
             style={immersiveEditorPaneStyle}
           >
             <h3>{t("editor")}</h3>
-            {!fallbackEditor ? (
-              <Editor
-                height="100%"
-                language="ncgcode"
-                theme={resolvedTheme === "light" ? "nc-light" : (resolvedTheme === "navy" ? "nc-dark" : "nc-x-dark")}
-                value={code}
-                onMount={onEditorMount}
-                onChange={(v) => setCode(v ?? "")}
-                options={{ minimap: { enabled: false }, fontSize: 13, folding: true, glyphMargin: true, smoothScrolling: true, lineNumbers: "on", automaticLayout: true }}
-              />
-            ) : (
-              <textarea
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  resize: "none",
-                  border: "none",
-                  outline: "none",
-                  background: resolvedTheme === "light" ? "#ffffff" : (resolvedTheme === "navy" ? "#0f172a" : "#16181c"),
-                  color: resolvedTheme === "light" ? "#0f172a" : "#e7e9ea",
-                  fontFamily: "Consolas, Monaco, 'Courier New', monospace",
-                  fontSize: 13,
-                  lineHeight: 1.45,
-                  padding: 12,
-                }}
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-              />
-            )}
+            <div ref={editorHostRef} className="editor-host">
+              {!fallbackEditor ? (
+                <Editor
+                  width={resolvedEditorViewport?.widthStyle ?? "100%"}
+                  height={resolvedEditorViewport?.heightStyle ?? "100%"}
+                  language="ncgcode"
+                  theme={resolvedTheme === "light" ? "nc-light" : (resolvedTheme === "navy" ? "nc-dark" : "nc-x-dark")}
+                  value={code}
+                  onMount={onEditorMount}
+                  onChange={(v) => setCode(v ?? "")}
+                  options={{
+                    minimap: { enabled: false },
+                    fontSize: 13,
+                    folding: true,
+                    glyphMargin: true,
+                    smoothScrolling: true,
+                    lineNumbers: "on",
+                    automaticLayout: false,
+                    wordWrap: "off",
+                    scrollbar: {
+                      horizontal: "auto",
+                      horizontalScrollbarSize: 10,
+                      alwaysConsumeMouseWheel: false,
+                    },
+                    scrollBeyondLastColumn: 4,
+                  }}
+                />
+              ) : (
+                <textarea
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    resize: "none",
+                    border: "none",
+                    outline: "none",
+                    overflowX: "auto",
+                    overflowY: "auto",
+                    whiteSpace: "pre",
+                    background: resolvedTheme === "light" ? "#ffffff" : (resolvedTheme === "navy" ? "#0f172a" : "#16181c"),
+                    color: resolvedTheme === "light" ? "#0f172a" : "#e7e9ea",
+                    fontFamily: "Consolas, Monaco, 'Courier New', monospace",
+                    fontSize: 13,
+                    lineHeight: 1.45,
+                    padding: 12,
+                  }}
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                />
+              )}
+            </div>
           </section>
           )}
 
@@ -2031,12 +2144,12 @@ function App() {
             <div
               className="splitter immersive-splitter"
               style={immersiveEditorSplitterStyle}
-              onPointerDown={(e) => startDrag(e, "editor", editorWidth)}
+              onPointerDown={(e) => startDrag(e, "editor", effectiveImmersiveEditorWidth)}
             />
           )}
 
           {!immersiveViewer && showEditor && showViewer && (
-            <div className="splitter" onPointerDown={(e) => startDrag(e, "editor", editorWidth)} />
+            <div className="splitter" onPointerDown={(e) => startDrag(e, "editor", normalEditorWidth)} />
           )}
 
           {showImmersiveViewerPane && (

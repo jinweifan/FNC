@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=FNCViewer
-Comment=FNCViewer Cross-Platform
+Name=First NC Viewer
+Comment=First NC Viewer Cross-Platform
 Exec=fncviewer %F
 Icon=fncviewer
 Terminal=false

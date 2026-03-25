@@ -2,5 +2,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() {
-  fncviewer_lib::run();
+  first_nc_viewer_lib::run();
 }
