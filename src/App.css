@@ -823,10 +823,17 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
   border-radius: 10px !important;
   background: color-mix(in oklab, var(--panel) 96%, transparent) !important;
   box-shadow: 0 8px 20px color-mix(in oklab, var(--bg) 70%, black 30%) !important;
+  left: 8px !important;
   right: 8px !important;
-  left: auto !important;
-  max-width: calc(100% - 16px) !important;
-  width: min(560px, calc(100% - 16px)) !important;
+  max-width: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+}
+
+.monaco-editor .find-widget > * {
+  min-width: 0 !important;
 }
 
 .monaco-editor .find-widget .monaco-inputbox {
@@ -841,11 +848,15 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
 
 .monaco-editor .find-widget .matchesCount {
   display: inline-block !important;
-  min-width: 72px;
+  min-width: 56px;
+  max-width: 72px;
   text-align: right;
   opacity: 1 !important;
   visibility: visible !important;
   color: var(--muted) !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .monaco-editor .find-widget .button {
@@ -914,7 +925,24 @@ label { font-size: 13px; color: var(--muted); display: inline-flex; align-items:
 
 .monaco-editor .find-widget .find-part,
 .monaco-editor .find-widget .replace-part {
+  flex: 1 1 auto !important;
   max-width: 100% !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+.monaco-editor .find-widget .find-part .monaco-inputbox,
+.monaco-editor .find-widget .replace-part .monaco-inputbox,
+.monaco-editor .find-widget .find-part .monaco-inputbox > .ibwrapper,
+.monaco-editor .find-widget .replace-part .monaco-inputbox > .ibwrapper,
+.monaco-editor .find-widget .find-part .monaco-findInput,
+.monaco-editor .find-widget .replace-part .monaco-findInput,
+.monaco-editor .find-widget .find-part .monaco-inputbox input,
+.monaco-editor .find-widget .replace-part .monaco-inputbox input {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
 }
 
 .monaco-editor .find-widget .button.disabled {

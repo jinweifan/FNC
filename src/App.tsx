@@ -509,6 +509,8 @@ function App() {
   const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const dragState = useRef<{ pane: "files" | "editor"; startX: number; startWidth: number } | null>(null);
+  const immersiveFilesPaneRef = useRef<HTMLElement | null>(null);
+  const immersiveEditorPaneRef = useRef<HTMLElement | null>(null);
 
   const resolvedTheme: "light" | "navy" | "dark" = themeMode === "system"
     ? (systemDark ? "dark" : "light")
@@ -521,6 +523,31 @@ function App() {
     { value: "Standard", label: t("speedStandard") },
     { value: "High", label: t("speedHigh") },
   ];
+
+  useEffect(() => {
+    if (isMac) return;
+    setShortcuts((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      if (prev.openNc === "Alt+O") {
+        next.openNc = "Ctrl+O";
+        changed = true;
+      }
+      if (prev.saveFile === "Alt+S") {
+        next.saveFile = "Ctrl+S";
+        changed = true;
+      }
+      if (prev.saveFileAs === "Alt+Shift+S") {
+        next.saveFileAs = "Ctrl+Shift+S";
+        changed = true;
+      }
+      if (prev.openShortcuts === "Alt+K") {
+        next.openShortcuts = "Ctrl+K";
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [isMac]);
   const shortcutItems: Array<{ id: ShortcutId; label: string }> = [
     { id: "openShortcuts", label: t("openShortcuts") },
     { id: "openNc", label: t("shortcutOpenNc") },
@@ -1279,6 +1306,12 @@ function App() {
         target?.classList?.contains("inputarea"),
       );
       const isEditable = tag === "input" || tag === "textarea" || target?.isContentEditable;
+
+      if ((e.ctrlKey || e.metaKey) && key === "f" && viewerHotkeyScope && !inEditor && !isEditable) {
+        e.preventDefault();
+        return;
+      }
+
       if (isEditable || inEditor) return;
 
       if (pressed === shortcuts.toggleFiles) {
@@ -1308,7 +1341,7 @@ function App() {
         return;
       }
       if (key === "escape") {
-        if (viewerHotkeyScope) {
+        if (viewerHotkeyScope || currentFrame || hoverFrame || pathNavActive) {
           e.preventDefault();
           setIsPlaying(false);
           setHoverFrame(null);
@@ -1611,32 +1644,39 @@ function App() {
   const showImmersiveEditorPane = immersiveViewer || showEditor;
   const showImmersiveViewerPane = immersiveViewer || showViewer;
   const immersivePaneCap = Math.max(280, Math.floor((viewportWidth - 180) / 3));
-  const immersiveFilesWidth = Math.max(
+  const immersiveViewportCap = Math.max(280, Math.floor(viewportWidth * 0.33));
+  const immersiveFilesBaseWidth = Math.max(
     Math.min(280, Math.min(520, immersivePaneCap)),
     Math.min(Math.min(520, immersivePaneCap), filesWidth),
   );
-  const immersiveEditorWidth = Math.max(
+  const immersiveEditorBaseWidth = Math.max(
     Math.min(360, Math.min(680, immersivePaneCap)),
     Math.min(Math.min(680, immersivePaneCap), editorWidth),
   );
+  const immersiveFilesWidth = Math.min(immersiveFilesBaseWidth, immersiveViewportCap);
+  const immersiveEditorWidth = Math.min(immersiveEditorBaseWidth, immersiveViewportCap);
   const immersiveFilePaneStyle: CSSProperties = immersiveViewer
-    ? { width: `${immersiveFilesWidth}px`, maxWidth: `min(${immersiveFilesWidth}px, 33vw)` }
+    ? { width: `${immersiveFilesWidth}px`, maxWidth: `${immersiveFilesWidth}px` }
     : ((showEditor || showViewer)
       ? { flex: `0 1 ${filesWidth}px`, maxWidth: `${filesWidth}px` }
       : { flex: "1 1 auto" });
   const immersiveEditorPaneStyle: CSSProperties = immersiveViewer
-    ? { width: `${immersiveEditorWidth}px`, maxWidth: `min(${immersiveEditorWidth}px, 33vw)` }
+    ? { width: `${immersiveEditorWidth}px`, maxWidth: `${immersiveEditorWidth}px` }
     : (showViewer
       ? { flex: `0 1 ${editorWidth}px`, maxWidth: `${editorWidth}px` }
       : { flex: "1 1 auto" });
+  const [measuredImmersiveFilesWidth, setMeasuredImmersiveFilesWidth] = useState(immersiveFilesWidth);
+  const [measuredImmersiveEditorWidth, setMeasuredImmersiveEditorWidth] = useState(immersiveEditorWidth);
+  const effectiveImmersiveFilesWidth = immersiveViewer && showFiles ? measuredImmersiveFilesWidth : immersiveFilesWidth;
+  const effectiveImmersiveEditorWidth = immersiveViewer && showEditor ? measuredImmersiveEditorWidth : immersiveEditorWidth;
   const immersiveSidebarStyle: CSSProperties | undefined = immersiveViewer
     ? {
       left: `${resolveImmersiveSidebarLeft({
         immersiveViewer,
         showFiles,
         showEditor,
-        filesWidth: immersiveFilesWidth,
-        editorWidth: immersiveEditorWidth,
+        filesWidth: effectiveImmersiveFilesWidth,
+        editorWidth: effectiveImmersiveEditorWidth,
       })}px`,
     }
     : undefined;
@@ -1648,8 +1688,8 @@ function App() {
           immersiveViewer,
           showFiles,
           showEditor,
-          filesWidth: immersiveFilesWidth,
-          editorWidth: immersiveEditorWidth,
+          filesWidth: effectiveImmersiveFilesWidth,
+          editorWidth: effectiveImmersiveEditorWidth,
         }) + 64,
       )}px`,
       "--immersive-top-right-safe": "84px",
@@ -1664,11 +1704,40 @@ function App() {
     shortcuts.toggleImmersiveViewer,
   );
   const immersiveFilesSplitterStyle: CSSProperties | undefined = immersiveViewer && showFiles
-    ? { left: `${immersiveFilesWidth}px` }
+    ? { left: `${effectiveImmersiveFilesWidth}px` }
     : undefined;
   const immersiveEditorSplitterStyle: CSSProperties | undefined = immersiveViewer && showEditor
-    ? { left: `${immersiveEditorWidth}px` }
+    ? { left: `${effectiveImmersiveEditorWidth}px` }
     : undefined;
+
+  useEffect(() => {
+    if (!immersiveViewer) {
+      setMeasuredImmersiveFilesWidth(immersiveFilesWidth);
+      setMeasuredImmersiveEditorWidth(immersiveEditorWidth);
+      return;
+    }
+    const updateMeasuredWidths = () => {
+      if (immersiveFilesPaneRef.current) {
+        setMeasuredImmersiveFilesWidth(Math.round(immersiveFilesPaneRef.current.getBoundingClientRect().width));
+      } else {
+        setMeasuredImmersiveFilesWidth(immersiveFilesWidth);
+      }
+      if (immersiveEditorPaneRef.current) {
+        setMeasuredImmersiveEditorWidth(Math.round(immersiveEditorPaneRef.current.getBoundingClientRect().width));
+      } else {
+        setMeasuredImmersiveEditorWidth(immersiveEditorWidth);
+      }
+    };
+    updateMeasuredWidths();
+    const observer = new ResizeObserver(() => updateMeasuredWidths());
+    if (immersiveFilesPaneRef.current) observer.observe(immersiveFilesPaneRef.current);
+    if (immersiveEditorPaneRef.current) observer.observe(immersiveEditorPaneRef.current);
+    window.addEventListener("resize", updateMeasuredWidths);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateMeasuredWidths);
+    };
+  }, [immersiveEditorWidth, immersiveFilesWidth, immersiveViewer, showEditor, showFiles]);
   const fileMenu = (
     <div className="menu-group">
       <button className="menu-btn" data-ui-tooltip={tooltipWithShortcut(t("openNc"), shortcuts.openNc)} onClick={() => void openNcFileByDialog()}><FileUp size={14} />{t("openNc")}</button>
@@ -1837,6 +1906,7 @@ function App() {
         <div className={`workspace-flex${immersiveViewer ? " immersive-workspace-flex" : ""}`}>
           {showImmersiveFilesPane && (
           <aside
+            ref={immersiveViewer ? immersiveFilesPaneRef : undefined}
             className={`file-pane panel${immersiveViewer ? " immersive-drawer immersive-drawer-files" : ""}${immersiveViewer && !showFiles ? " immersive-drawer-hidden" : ""}`}
             style={immersiveFilePaneStyle}
           >
@@ -1920,6 +1990,7 @@ function App() {
 
           {showImmersiveEditorPane && (
           <section
+            ref={immersiveViewer ? immersiveEditorPaneRef : undefined}
             className={`editor-pane panel${immersiveViewer ? " immersive-drawer immersive-drawer-editor" : ""}${immersiveViewer && !showEditor ? " immersive-drawer-hidden" : ""}`}
             style={immersiveEditorPaneStyle}
           >
@@ -1932,7 +2003,7 @@ function App() {
                 value={code}
                 onMount={onEditorMount}
                 onChange={(v) => setCode(v ?? "")}
-                options={{ minimap: { enabled: false }, fontSize: 13, folding: true, glyphMargin: true, smoothScrolling: true, lineNumbers: "on" }}
+                options={{ minimap: { enabled: false }, fontSize: 13, folding: true, glyphMargin: true, smoothScrolling: true, lineNumbers: "on", automaticLayout: true }}
               />
             ) : (
               <textarea

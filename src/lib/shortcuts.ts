@@ -33,16 +33,17 @@ export function isApplePlatform(platformLike: string | undefined): boolean {
 }
 
 export function getDefaultShortcuts(platformLike?: string): ShortcutMap {
-  const primary = isApplePlatform(platformLike) ? "Meta" : "Alt";
+  const primary = isApplePlatform(platformLike) ? "Meta" : "Ctrl";
+  const secondary = isApplePlatform(platformLike) ? "Meta" : "Alt";
   return {
     openShortcuts: `${primary}+K`,
     openNc: `${primary}+O`,
     saveFile: `${primary}+S`,
     saveFileAs: `${primary}+Shift+S`,
-    toggleFiles: `${primary}+1`,
-    toggleEditor: `${primary}+2`,
-    toggleViewer: `${primary}+3`,
-    toggleImmersiveViewer: `${primary}+4`,
+    toggleFiles: `${secondary}+1`,
+    toggleEditor: `${secondary}+2`,
+    toggleViewer: `${secondary}+3`,
+    toggleImmersiveViewer: `${secondary}+4`,
     refocus: "F",
     viewTop: "Ctrl+1",
     viewFront: "Ctrl+2",
