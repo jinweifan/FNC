@@ -65,3 +65,20 @@ export function resolveViewerFocusSegment(
   }
   return all.length > 1 ? all : null;
 }
+
+export function resolveViewerFocusPointBuffer(
+  frames: FrameState[],
+  markerFrame: FrameState | null,
+  pickedSegment: SegmentRecord | null,
+): number[] | null {
+  const points = resolveViewerFocusSegment(frames, markerFrame, pickedSegment);
+  if (!points || points.length < 2) return null;
+  const out = new Array<number>(points.length * 3);
+  let offset = 0;
+  for (const point of points) {
+    out[offset++] = point.x;
+    out[offset++] = point.y;
+    out[offset++] = point.z;
+  }
+  return out;
+}

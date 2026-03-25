@@ -4,6 +4,66 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      :root {
+        --boot-bg: #020617;
+        --boot-text: #dbeafe;
+        --boot-panel: #0f172a;
+        --boot-border: #334155;
+        --boot-muted: #94a3b8;
+      }
+      html, body, #root {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: var(--boot-bg);
+        color: var(--boot-text);
+      }
+      body {
+        overflow: hidden;
+      }
+    </style>
+    <script>
+      (() => {
+        try {
+          const stored = localStorage.getItem("fnc.themeMode");
+          const normalized = stored === "dark" ? "navy" : stored;
+          const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const theme = normalized === "light"
+            ? "light"
+            : normalized === "navy"
+              ? "navy"
+              : normalized === "xdark"
+                ? "dark"
+                : (systemDark ? "dark" : "light");
+          const palette = theme === "navy"
+            ? { background: "#020617", text: "#dbeafe", panel: "#0f172a", border: "#334155", muted: "#94a3b8" }
+            : theme === "dark"
+              ? { background: "#000000", text: "#e7e9ea", panel: "#16181c", border: "#2f3336", muted: "#71767b" }
+              : { background: "#eef2f7", text: "#0f172a", panel: "#ffffff", border: "#d1dbe8", muted: "#64748b" };
+          const root = document.documentElement;
+          root.setAttribute("data-theme", theme);
+          root.style.backgroundColor = palette.background;
+          root.style.color = palette.text;
+          root.style.colorScheme = theme === "light" ? "light" : "dark";
+          root.style.setProperty("--boot-bg", palette.background);
+          root.style.setProperty("--boot-text", palette.text);
+          root.style.setProperty("--boot-panel", palette.panel);
+          root.style.setProperty("--boot-border", palette.border);
+          root.style.setProperty("--boot-muted", palette.muted);
+          document.addEventListener("DOMContentLoaded", () => {
+            document.body.style.backgroundColor = palette.background;
+            document.body.style.color = palette.text;
+            const mount = document.getElementById("root");
+            if (mount) {
+              mount.style.backgroundColor = palette.background;
+              mount.style.color = palette.text;
+            }
+          }, { once: true });
+        } catch {
+        }
+      })();
+    </script>
     <title>First NC Viewer</title>
   </head>
   <body>

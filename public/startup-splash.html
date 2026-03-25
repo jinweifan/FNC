@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>First NC Viewer</title>
+    <style>
+      :root {
+        --bg: #eef2f7;
+        --panel: #ffffff;
+        --text: #0f172a;
+        --muted: #64748b;
+        --border: #d1dbe8;
+        --progress-a: #22d3ee;
+        --progress-b: #38bdf8;
+        --progress-c: #60a5fa;
+      }
+      :root[data-theme="navy"] {
+        --bg: #020617;
+        --panel: #0f172a;
+        --text: #dbeafe;
+        --muted: #94a3b8;
+        --border: #334155;
+      }
+      :root[data-theme="dark"] {
+        --bg: #000000;
+        --panel: #16181c;
+        --text: #e7e9ea;
+        --muted: #71767b;
+        --border: #2f3336;
+      }
+      * {
+        box-sizing: border-box;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--panel) 78%, white 22%) 0%, transparent 35%),
+          linear-gradient(180deg, color-mix(in srgb, var(--bg) 92%, var(--panel)) 0%, var(--bg) 100%);
+        color: var(--text);
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      body {
+        display: grid;
+        place-items: center;
+      }
+      .shell {
+        width: min(520px, calc(100vw - 32px));
+        padding: 30px 34px 26px;
+        border-radius: 24px;
+        border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+        background: color-mix(in srgb, var(--panel) 90%, transparent);
+        box-shadow:
+          0 22px 60px rgba(15, 23, 42, 0.16),
+          inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(18px);
+      }
+      .brand {
+        display: grid;
+        justify-items: center;
+        gap: 18px;
+      }
+      .logo {
+        width: min(260px, 62vw);
+        max-width: 100%;
+        display: block;
+        filter: drop-shadow(0 12px 24px rgba(15, 23, 42, 0.12));
+      }
+      .logo-dark {
+        display: none;
+      }
+      :root[data-theme="light"] .logo-light {
+        display: block;
+      }
+      :root[data-theme="light"] .logo-dark {
+        display: none;
+      }
+      :root[data-theme="navy"] .logo-light,
+      :root[data-theme="dark"] .logo-light {
+        display: none;
+      }
+      :root[data-theme="navy"] .logo-dark,
+      :root[data-theme="dark"] .logo-dark {
+        display: block;
+      }
+      .title {
+        font-size: 22px;
+        line-height: 1.15;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+      }
+      .subtitle {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.4;
+        font-weight: 500;
+      }
+      .progress {
+        position: relative;
+        margin-top: 24px;
+        height: 6px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: color-mix(in srgb, var(--border) 46%, transparent);
+      }
+      .progress::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        width: 34%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--progress-a) 0%, var(--progress-b) 55%, var(--progress-c) 100%);
+        animation: slide 1.3s ease-in-out infinite;
+      }
+      @keyframes slide {
+        0% { transform: translateX(-125%); }
+        60% { transform: translateX(195%); }
+        100% { transform: translateX(195%); }
+      }
+    </style>
+    <script>
+      (() => {
+        try {
+          const storedTheme = localStorage.getItem("fnc.themeMode");
+          const storedLang = localStorage.getItem("fnc.lang");
+          const normalizedTheme = storedTheme === "dark" ? "navy" : storedTheme;
+          const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const theme = normalizedTheme === "light"
+            ? "light"
+            : normalizedTheme === "navy"
+              ? "navy"
+              : normalizedTheme === "xdark"
+                ? "dark"
+                : (systemDark ? "dark" : "light");
+          const locale = storedLang === "en-US" ? "en-US" : "zh-CN";
+          document.documentElement.setAttribute("data-theme", theme);
+          document.documentElement.setAttribute("lang", locale);
+          document.addEventListener("DOMContentLoaded", () => {
+            const subtitle = document.getElementById("subtitle");
+            if (subtitle) {
+              subtitle.textContent = locale === "en-US" ? "Loading workspace" : "加载工作区";
+            }
+          }, { once: true });
+        } catch {
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="brand">
+        <img class="logo logo-light" src="/logo-fnc-art.png" alt="First NC Viewer" />
+        <img class="logo logo-dark" src="/logo-fnc-art-dark.png" alt="First NC Viewer" />
+        <div>
+          <div class="title">First NC Viewer</div>
+          <div class="subtitle" id="subtitle">Loading workspace</div>
+        </div>
+      </div>
+      <div class="progress" aria-hidden="true"></div>
+    </div>
+  </body>
+</html>

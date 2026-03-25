@@ -9,7 +9,7 @@ use std::{
     },
     time::UNIX_EPOCH,
 };
-use tauri::{Emitter, Manager, Size};
+use tauri::{Emitter, Manager, Size, Theme};
 
 #[cfg(target_os = "macos")]
 use objc2_foundation::{NSProcessInfo, NSString};
@@ -215,11 +215,26 @@ struct LocaleState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct StartupAppearance {
+    resolved_theme: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct NcFileItem {
     path: String,
     file_name: String,
     size_bytes: u64,
     created_at_ms: u64,
+}
+
+#[tauri::command]
+fn set_startup_appearance(
+    appearance: StartupAppearance,
+    app: tauri::AppHandle,
+) -> Result<StartupAppearance, String> {
+    write_startup_appearance(&app, &appearance)?;
+    Ok(appearance)
 }
 
 #[tauri::command]
@@ -566,6 +581,47 @@ fn set_locale(locale: String, state: tauri::State<'_, AppState>) -> Result<Local
     Ok(LocaleState { locale })
 }
 
+fn startup_appearance_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("failed to resolve app config dir: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("failed to create app config dir: {e}"))?;
+    Ok(dir.join("startup-appearance.json"))
+}
+
+fn read_startup_appearance<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<StartupAppearance> {
+    let path = startup_appearance_path(app).ok()?;
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<StartupAppearance>(&content).ok()
+}
+
+fn write_startup_appearance<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    appearance: &StartupAppearance,
+) -> Result<(), String> {
+    let path = startup_appearance_path(app)?;
+    let content = serde_json::to_vec_pretty(appearance)
+        .map_err(|e| format!("failed to serialize startup appearance: {e}"))?;
+    fs::write(path, content).map_err(|e| format!("failed to write startup appearance: {e}"))
+}
+
+fn startup_theme_background(theme: &str) -> tauri::webview::Color {
+    match theme {
+        "dark" => tauri::webview::Color(0, 0, 0, 255),
+        "navy" => tauri::webview::Color(2, 6, 23, 255),
+        _ => tauri::webview::Color(238, 242, 247, 255),
+    }
+}
+
+fn startup_theme_window_theme(theme: &str) -> Option<Theme> {
+    match theme {
+        "dark" | "navy" => Some(Theme::Dark),
+        "light" => Some(Theme::Light),
+        _ => None,
+    }
+}
+
 #[tauri::command]
 fn list_nc_files_in_folder(folder_path: String) -> Result<Vec<NcFileItem>, String> {
     let mut files: Vec<NcFileItem> = fs::read_dir(&folder_path)
@@ -877,9 +933,24 @@ pub fn run() {
             }
             app.handle().plugin(tauri_plugin_dialog::init())?;
             apply_adaptive_window_size(app);
+            if let Some(main_window) = app.get_webview_window("main") {
+                let appearance = read_startup_appearance(app.handle()).unwrap_or(StartupAppearance {
+                    resolved_theme: "light".to_string(),
+                });
+                let _ = main_window.set_background_color(Some(startup_theme_background(&appearance.resolved_theme)));
+                let _ = main_window.set_theme(startup_theme_window_theme(&appearance.resolved_theme));
+            }
             Ok(())
         })
+        .on_page_load(|webview, _payload| {
+            if webview.label() == "main" {
+                let window = webview.window();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            set_startup_appearance,
             open_nc_file,
             load_machine_profile,
             load_tool_library,

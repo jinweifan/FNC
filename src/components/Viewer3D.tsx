@@ -5,13 +5,16 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useTranslation } from "react-i18next";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { PerspectiveCamera } from "three";
-import type { CameraState, FrameState } from "../types";
-import { resolveViewerFocusSegment } from "../lib/viewerFocusSegment";
+import type { CameraState } from "../types";
+import { resolveViewerFocusPointBuffer } from "../lib/viewerFocusSegment";
 import { getGizmoAxisMaterialProps, getGizmoHaloMaterialProps } from "../lib/viewerGizmoLayers";
-import { asDreiLinePoints, buildLinePointBuffer } from "../lib/viewerLinePoints";
+import { buildViewerHoverInfo } from "../lib/viewerHoverInfo";
+import { asDreiLinePoints } from "../lib/viewerLinePoints";
+import { getViewerSourceSignature, isSegmentRecordStale } from "../lib/viewerPlaybackState";
 import { findClosestScreenSpaceSegment } from "../lib/viewerPick";
 import { areViewer3DPropsEqual, type Viewer3DProps } from "../lib/viewer3dProps";
-import { buildViewerSegmentData, type SegmentRecord } from "../lib/viewerSegments";
+import { type SegmentRecord } from "../lib/viewerSegments";
+import { buildViewerPickCollections, buildViewerRenderBuffers, buildViewerSceneData } from "../lib/viewerSceneData";
 import { computeAnchoredZoomState } from "../lib/viewerZoom";
 
 type Vec3Like = { x: number; y: number; z: number };
@@ -19,10 +22,6 @@ type HoverTooltipData = {
   segment: SegmentRecord;
   x: number;
   y: number;
-};
-type NcWord = {
-  letter: string;
-  value: string;
 };
 
 function isFiniteNumber(v: number): boolean {
@@ -33,64 +32,17 @@ function isFiniteVec3Like(v: Vec3Like): boolean {
   return isFiniteNumber(v.x) && isFiniteNumber(v.y) && isFiniteNumber(v.z);
 }
 
-function parseWordsFromNcLine(rawLine: string): NcWord[] {
-  const clean = rawLine.replace(/\([^)]*\)/g, "").replace(/;.*$/g, "").toUpperCase();
-  const regex = /([A-Z])([+-]?\d+(?:\.\d+)?)/g;
-  const out: NcWord[] = [];
-  let m: RegExpExecArray | null = regex.exec(clean);
-  while (m) {
-    out.push({ letter: m[1], value: m[2] });
-    m = regex.exec(clean);
-  }
-  const order = ["G", "M", "T", "X", "Y", "Z", "U", "V", "W", "R", "I", "J", "K", "F", "S", "P", "Q", "H", "D"];
-  return out.sort((a, b) => {
-    const ia = order.indexOf(a.letter);
-    const ib = order.indexOf(b.letter);
-    const ra = ia === -1 ? 999 : ia;
-    const rb = ib === -1 ? 999 : ib;
-    return ra - rb;
-  });
-}
-
-function framesForCenter(frames: FrameState[]): FrameState[] {
-  if (frames.length < 2) return frames;
-  const firstCut = frames.findIndex((f, i) => i > 0 && f.motion && f.motion !== "Rapid");
-  let base = firstCut > 0 ? frames.slice(Math.max(0, firstCut - 1)) : frames;
-  if (base.length < 2) base = frames;
-
-  const p0 = base[0]?.position;
-  if (p0) {
-    const nearOrigin = Math.hypot(p0.x, p0.y, p0.z) < 1e-6;
-    if (nearOrigin && base.length > 2) {
-      const withoutFirst = base.slice(1);
-      const hasFarPoint = withoutFirst.some((f) => Math.hypot(f.position.x, f.position.y, f.position.z) > 1);
-      if (hasFarPoint) base = withoutFirst;
-    }
-  }
-  return base;
-}
-
-function sampleSegments(segments: SegmentRecord[], maxCount: number): SegmentRecord[] {
-  if (segments.length <= maxCount) return segments;
-  const stride = Math.ceil(segments.length / maxCount);
-  const out: SegmentRecord[] = [];
-  for (let i = 0; i < segments.length; i += stride) out.push(segments[i]);
-  const last = segments[segments.length - 1];
-  if (out[out.length - 1] !== last) out.push(last);
-  return out;
-}
-
 function FocusSegment({
   points,
   lineWidth,
 }: {
-  points: Vector3[] | null;
+  points: number[] | null;
   lineWidth: number;
 }) {
-  if (!points || points.length < 2) return null;
+  if (!points || points.length < 6) return null;
   return (
     <Line
-      points={points}
+      points={asDreiLinePoints(points)}
       color="#ff4d4f"
       lineWidth={lineWidth}
       segments
@@ -127,13 +79,17 @@ function ToolPoint({
   segment,
   sceneScale,
 }: {
-  segment: Vector3[] | null;
+  segment: number[] | null;
   sceneScale: number;
 }) {
-  if (!segment || segment.length < 2) return null;
-  const end = segment[segment.length - 1];
-  const start = segment[segment.length - 2];
-  const dir = new Vector3(end.x - start.x, end.y - start.y, end.z - start.z);
+  if (!segment || segment.length < 6) return null;
+  const endOffset = segment.length - 3;
+  const startOffset = segment.length - 6;
+  const dir = new Vector3(
+    segment[endOffset] - segment[startOffset],
+    segment[endOffset + 1] - segment[startOffset + 1],
+    segment[endOffset + 2] - segment[startOffset + 2],
+  );
   const segLen = dir.length();
   if (segLen < 1e-8) return null;
 
@@ -152,9 +108,9 @@ function ToolPoint({
   }
   // Anchor arrow tip on the current point (segment end), not segment middle.
   const origin = new Vector3(
-    end.x - dir.x * arrowLen,
-    end.y - dir.y * arrowLen,
-    end.z - dir.z * arrowLen,
+    segment[endOffset] - dir.x * arrowLen,
+    segment[endOffset + 1] - dir.y * arrowLen,
+    segment[endOffset + 2] - dir.z * arrowLen,
   );
 
   return (
@@ -644,7 +600,7 @@ const FocusOverlay = memo(function FocusOverlay({
   focusWidth,
   sceneScale,
 }: {
-  focusSegment: Vector3[] | null;
+  focusSegment: number[] | null;
   focusWidth: number;
   sceneScale: number;
 }) {
@@ -723,137 +679,35 @@ function Viewer3DInner({
     return [0.85, 1.25];
   }, [adaptiveFactor]);
   const normalizedCodeLines = codeLines ?? [];
-  const segmentData = useMemo(
-    () => buildViewerSegmentData(frames, normalizedCodeLines),
+  const sceneData = useMemo(
+    () => buildViewerSceneData(frames, normalizedCodeLines),
     [frames, normalizedCodeLines],
   );
-  const pickCutSegments = useMemo(
-    () => sampleSegments(segmentData.cutSegments, scaledCount(9000, 1800)),
-    [scaledCount, segmentData.cutSegments],
+  const { segmentData, sceneScale, geometryCenter } = sceneData;
+  const pickCollections = useMemo(
+    () => buildViewerPickCollections(segmentData, showRapidPath, scaledCount),
+    [scaledCount, segmentData, showRapidPath],
   );
-  const pickRapidSegments = useMemo(
-    () => sampleSegments(segmentData.rapidSegments, scaledCount(4500, 900)),
-    [scaledCount, segmentData.rapidSegments],
+  const renderBuffers = useMemo(
+    () => buildViewerRenderBuffers(segmentData, isPointerDown, scaledCount),
+    [isPointerDown, scaledCount, segmentData],
   );
-  const sampledPickSegments = useMemo(
-    () => (showRapidPath ? [...pickCutSegments, ...pickRapidSegments] : pickCutSegments),
-    [pickCutSegments, pickRapidSegments, showRapidPath],
-  );
-  const fullPickSegments = useMemo(
-    () => (showRapidPath ? [...segmentData.cutSegments, ...segmentData.rapidSegments] : segmentData.cutSegments),
-    [segmentData.cutSegments, segmentData.rapidSegments, showRapidPath],
-  );
-  const centerFrames = useMemo(() => framesForCenter(frames), [frames]);
-  const renderCutPoints = useMemo(
-    () => {
-      const maxSegs = isPointerDown ? scaledCount(9000, 1800) : scaledCount(28000, 3200);
-      return buildLinePointBuffer(segmentData.cutRenderSegments, maxSegs);
-    },
-    [isPointerDown, scaledCount, segmentData.cutRenderSegments],
-  );
-  const renderPlungePoints = useMemo(
-    () => {
-      return buildLinePointBuffer(segmentData.plungeRenderSegments);
-    },
-    [segmentData.plungeRenderSegments],
-  );
-  const renderUvwPoints = useMemo(
-    () => {
-      const maxSegs = isPointerDown ? scaledCount(7000, 1400) : scaledCount(22000, 2800);
-      return buildLinePointBuffer(segmentData.uvwRenderSegments, maxSegs);
-    },
-    [isPointerDown, scaledCount, segmentData.uvwRenderSegments],
-  );
-  const renderRapidPoints = useMemo(
-    () => {
-      const maxSegs = isPointerDown ? scaledCount(6000, 1000) : scaledCount(18000, 2400);
-      return buildLinePointBuffer(segmentData.rapidRenderSegments, maxSegs);
-    },
-    [isPointerDown, scaledCount, segmentData.rapidRenderSegments],
-  );
-
-  const sceneScale = useMemo(() => {
-    if (!centerFrames.length) return 100;
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let minZ = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    let maxZ = Number.NEGATIVE_INFINITY;
-    for (const f of centerFrames) {
-      if (!isFiniteVec3Like(f.position)) continue;
-      minX = Math.min(minX, f.position.x);
-      minY = Math.min(minY, f.position.y);
-      minZ = Math.min(minZ, f.position.z);
-      maxX = Math.max(maxX, f.position.x);
-      maxY = Math.max(maxY, f.position.y);
-      maxZ = Math.max(maxZ, f.position.z);
-    }
-    if (
-      !isFiniteNumber(minX) || !isFiniteNumber(minY) || !isFiniteNumber(minZ) ||
-      !isFiniteNumber(maxX) || !isFiniteNumber(maxY) || !isFiniteNumber(maxZ)
-    ) {
-      return 100;
-    }
-    return Math.max(80, Math.hypot(maxX - minX, maxY - minY, maxZ - minZ));
-  }, [centerFrames]);
-  const geometryCenter = useMemo(() => {
-    if (!centerFrames.length) return new Vector3(0, 0, 0);
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let minZ = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    let maxZ = Number.NEGATIVE_INFINITY;
-    for (const f of centerFrames) {
-      if (!isFiniteVec3Like(f.position)) continue;
-      minX = Math.min(minX, f.position.x);
-      minY = Math.min(minY, f.position.y);
-      minZ = Math.min(minZ, f.position.z);
-      maxX = Math.max(maxX, f.position.x);
-      maxY = Math.max(maxY, f.position.y);
-      maxZ = Math.max(maxZ, f.position.z);
-    }
-    if (
-      !isFiniteNumber(minX) || !isFiniteNumber(minY) || !isFiniteNumber(minZ) ||
-      !isFiniteNumber(maxX) || !isFiniteNumber(maxY) || !isFiniteNumber(maxZ)
-    ) {
-      return new Vector3(0, 0, 0);
-    }
-    return new Vector3((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5);
-  }, [centerFrames]);
+  const renderCutPoints = renderBuffers.cutPoints;
+  const renderPlungePoints = renderBuffers.plungePoints;
+  const renderUvwPoints = renderBuffers.uvwPoints;
+  const renderRapidPoints = renderBuffers.rapidPoints;
+  const sourceSignature = useMemo(() => getViewerSourceSignature(frames), [frames]);
   const markerFrame = currentFrame ?? hoverFrame ?? null;
 
   const focusSegment = useMemo(() => {
-    const focusPoints = resolveViewerFocusSegment(frames, markerFrame, pickedSegment);
-    if (!focusPoints) return null;
-    return focusPoints.map((point) => new Vector3(point.x, point.y, point.z));
+    return resolveViewerFocusPointBuffer(frames, markerFrame, pickedSegment);
   }, [frames, markerFrame, pickedSegment]);
 
   const focusWidth = markerFrame?.motion === "Rapid" ? 1.2 : 1.8;
   const hoverInfo = useMemo(() => {
     if (!hoverTooltip) return null;
-    const seg = hoverTooltip.segment;
-    const dx = seg.end.x - seg.start.x;
-    const dy = seg.end.y - seg.start.y;
-    const dz = seg.end.z - seg.start.z;
-    const length = Math.hypot(dx, dy, dz);
-    const isCurve = seg.endFrame.motion === "ArcCw" || seg.endFrame.motion === "ArcCcw";
-    const rawLine = normalizedCodeLines[Math.max(0, (seg.endFrame.lineNumber ?? 1) - 1)] ?? "";
-    const words = parseWordsFromNcLine(rawLine);
-    return {
-      isCurve,
-      line: seg.endFrame.lineNumber,
-      motionLabel: isCurve
-        ? (seg.endFrame.motion === "ArcCw" ? "G02" : "G03")
-        : (seg.endFrame.motion === "Rapid" ? "G00" : "G01"),
-      start: seg.start,
-      end: seg.end,
-      angleXY: Math.atan2(dy, dx) * (180 / Math.PI),
-      length,
-      chord: Math.hypot(dx, dy),
-      words,
-    };
+    const rawLine = normalizedCodeLines[Math.max(0, (hoverTooltip.segment.endFrame.lineNumber ?? 1) - 1)] ?? "";
+    return buildViewerHoverInfo(hoverTooltip.segment, rawLine);
   }, [hoverTooltip, normalizedCodeLines]);
 
   const queueHoverTooltip = useCallback((seg: SegmentRecord, clientX: number, clientY: number) => {
@@ -894,6 +748,12 @@ function Viewer3DInner({
   useEffect(() => () => {
     if (hoverDelayRef.current) window.clearTimeout(hoverDelayRef.current);
   }, []);
+
+  useEffect(() => {
+    clearHoverTooltip();
+    setIsPickTargetHovered(false);
+    setPickedSegment((prev) => (isSegmentRecordStale(prev, frames) ? null : prev));
+  }, [clearHoverTooltip, frames, sourceSignature]);
 
   useEffect(() => {
     if (!pickedSegment || !currentFrame) return;
@@ -1117,7 +977,7 @@ function Viewer3DInner({
       };
     };
 
-    const best = findClosestScreenSpaceSegment(fullPickSegments, mx, my, 40 * 40, (seg) => {
+    const best = findClosestScreenSpaceSegment(pickCollections.fullSegments, mx, my, 40 * 40, (seg) => {
       const start = toScreen(seg.start);
       const end = toScreen(seg.end);
       if (!Number.isFinite(start.x) || !Number.isFinite(start.y) || !Number.isFinite(end.x) || !Number.isFinite(end.y)) {
@@ -1148,7 +1008,7 @@ function Viewer3DInner({
       y: best.start.y + (best.end.y - best.start.y) * ratio,
       z: best.start.z + (best.end.z - best.start.z) * ratio,
     };
-  }, [fullPickSegments]);
+  }, [pickCollections.fullSegments]);
 
   const handleWheel = useCallback((e: ReactWheelEvent<HTMLDivElement>) => {
     const controls = controlsRef.current;
@@ -1390,8 +1250,8 @@ function Viewer3DInner({
         />
         <FocusOverlay focusSegment={focusSegment} focusWidth={focusWidth} sceneScale={sceneScale} />
         <MemoRayPickController
-          sampledSegments={sampledPickSegments}
-          fullSegments={fullPickSegments}
+          sampledSegments={pickCollections.sampledSegments}
+          fullSegments={pickCollections.fullSegments}
           cutSegments={segmentData.cutSegments}
           rapidSegments={showRapidPath ? segmentData.rapidSegments : []}
           enabled={!isPointerDown}

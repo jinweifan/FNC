@@ -47,6 +47,8 @@ import { splitCodeLines, toLoadedProgramState } from "./lib/loadedProgram";
 import { enterImmersivePanes, exitImmersivePanes, toggleImmersiveDrawer } from "./lib/immersiveViewer";
 import { resolveImmersiveSidebarLeft } from "./lib/immersiveSidebar";
 import { clampPaneWidth } from "./lib/paneWidths";
+import { getViewerSourceSignature, shouldClearTransientViewerState } from "./lib/viewerPlaybackState";
+import { applyThemePaletteToDom, getBootThemePalette, resolveBootTheme } from "./lib/themeBoot";
 import { resolveRestoredFrameIndex, sanitizeStoredWorkspaceSession, type StoredWorkspaceSession } from "./lib/workspaceSession";
 import { clampWorkspaceWindowState, sanitizeStoredWorkspaceWindowState } from "./lib/workspaceState";
 import { sanitizeToolbarPrefs } from "./lib/toolbarPrefs";
@@ -411,6 +413,8 @@ function App() {
   const framesRef = useRef<FrameState[]>([]);
   const lastEditorFollowTsRef = useRef(0);
   const playProgressRef = useRef(0);
+  const prevViewerSourceSignatureRef = useRef("empty");
+  const prevIsPlayingRef = useRef(false);
   const playProgressUiTsRef = useRef(0);
   const playProgressUiValueRef = useRef(0);
   const launchFileHandledRef = useRef(false);
@@ -543,9 +547,7 @@ function App() {
   const immersiveFilesPaneRef = useRef<HTMLElement | null>(null);
   const immersiveEditorPaneRef = useRef<HTMLElement | null>(null);
 
-  const resolvedTheme: "light" | "navy" | "dark" = themeMode === "system"
-    ? (systemDark ? "dark" : "light")
-    : (themeMode === "xdark" ? "dark" : themeMode);
+  const resolvedTheme: "light" | "navy" | "dark" = resolveBootTheme(themeMode, systemDark);
   const currentLocale = i18n.resolvedLanguage === "zh-CN" || i18n.language === "zh-CN" ? "zh-CN" : "en-US";
   const hasUnsavedChanges = Boolean(loadedProgram) && code !== lastSavedContent;
   const visiblePaneCount = [showFiles, showEditor, showViewer].filter(Boolean).length;
@@ -703,6 +705,7 @@ function App() {
       .slice(0, 10);
   }, [fileSearch, recentFiles]);
   const codeLines = useMemo(() => splitCodeLines(code), [code]);
+  const viewerSourceSignature = useMemo(() => getViewerSourceSignature(frames), [frames]);
   const shortcutConflicts = useMemo(() => findShortcutConflicts(shortcuts), [shortcuts]);
   const currentNcLineText = useMemo(() => {
     if (!currentFrame || !codeLines.length) return "-";
@@ -728,7 +731,14 @@ function App() {
   }, [frames]);
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", resolvedTheme);
+    const palette = getBootThemePalette(resolvedTheme);
+    applyThemePaletteToDom(document, resolvedTheme, palette);
+    if (inTauriRuntime()) {
+      const tauriTheme = resolvedTheme === "light" ? "light" : "dark";
+      void invoke("set_startup_appearance", { appearance: { resolvedTheme } }).catch(() => {});
+      void getCurrentWindow().setBackgroundColor(palette.background).catch(() => {});
+      void getCurrentWindow().setTheme(tauriTheme).catch(() => {});
+    }
   }, [resolvedTheme]);
   useEffect(() => {
     localStorage.setItem(STORAGE_THEME_KEY, themeMode);
@@ -775,6 +785,16 @@ function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_IMMERSIVE_VIEWER_KEY, String(immersiveViewer));
   }, [immersiveViewer]);
+  useEffect(() => {
+    const reset = shouldClearTransientViewerState({
+      previousIsPlaying: prevIsPlayingRef.current,
+      nextIsPlaying: isPlaying,
+      sourceChanged: prevViewerSourceSignatureRef.current !== viewerSourceSignature,
+    });
+    prevIsPlayingRef.current = isPlaying;
+    prevViewerSourceSignatureRef.current = viewerSourceSignature;
+    if (reset.clearHoverFrame) setHoverFrame(null);
+  }, [isPlaying, viewerSourceSignature]);
   useEffect(() => {
     if (!activeFile || !loadedProgram || !frames.length) return;
     localStorage.setItem(
@@ -2353,7 +2373,6 @@ function App() {
               onRefocusApplied={handleViewerRefocusApplied}
               onRequestNamedView={handleViewerRequestNamedView}
               onViewerHotkeyScopeChange={setViewerHotkeyScope}
-              // Keep camera stable across hide/show and file switches; avoid secondary auto-fit jitter.
               fitOnResize={false}
               onCameraStateChange={handleViewerCameraStateChange}
               onFrameHover={handleViewerFrameHover}

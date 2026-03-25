@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { FrameState } from "../types";
-import { resolveViewerFocusSegment } from "./viewerFocusSegment.ts";
+import { resolveViewerFocusPointBuffer, resolveViewerFocusSegment } from "./viewerFocusSegment.ts";
 import type { SegmentRecord } from "./viewerSegments.ts";
 
 function makeFrame(index: number, lineNumber: number, x: number, y = 0, z = 0): FrameState {
@@ -40,4 +40,18 @@ test("resolveViewerFocusSegment falls back to the nearest visible segment when t
     frames[1].position,
     frames[2].position,
   ]);
+});
+
+
+test("resolveViewerFocusPointBuffer flattens the active segment into the smallest render payload", () => {
+  const frames = [makeFrame(0, 1, 0), makeFrame(1, 2, 10), makeFrame(2, 3, 20)];
+  const picked: SegmentRecord = {
+    start: { x: 1, y: 2, z: 3 },
+    end: { x: 4, y: 5, z: 6 },
+    endFrame: frames[1],
+    sourceIndex: 0,
+    lane: "cut",
+  };
+
+  assert.deepEqual(resolveViewerFocusPointBuffer(frames, frames[1], picked), [1, 2, 3, 4, 5, 6]);
 });
