@@ -85,6 +85,8 @@
   "legendSelected": "Selected",
   "legendUvw": "UVW Backside Path",
   "currentCode": "Current Code",
+  "fileEncoding": "Encoding",
+  "pathPointsUnit": "path points",
   "mode": "Mode",
   "modeNormal": "Engraver Mode",
   "modeLaser": "Laser Mode",

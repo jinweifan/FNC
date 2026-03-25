@@ -21,6 +21,7 @@ export interface ParseResult {
   filePath: string;
   fileName: string;
   extension: string;
+  encoding: string;
   totalLines: number;
   totalMoves: number;
   warnings: string[];
@@ -40,6 +41,7 @@ export interface LoadedProgramState {
   filePath: string;
   fileName: string;
   extension: string;
+  encoding: string;
   totalLines: number;
   totalMoves: number;
   warnings: string[];

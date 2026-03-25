@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+﻿import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { availableMonitors, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -42,7 +42,6 @@ import {
 } from "lucide-react";
 import "./App.css";
 import { Viewer3D } from "./components/Viewer3D";
-import { resolveMeasuredEditorViewport } from "./lib/editorViewport";
 import { splitCodeLines, toLoadedProgramState } from "./lib/loadedProgram";
 import { enterImmersivePanes, exitImmersivePanes, toggleImmersiveDrawer } from "./lib/immersiveViewer";
 import { resolveImmersiveSidebarLeft } from "./lib/immersiveSidebar";
@@ -76,6 +75,12 @@ type InteractionMode = "pan" | "rotate";
 type FileSortField = "createdAtMs" | "fileName" | "sizeBytes";
 type SortOrder = "asc" | "desc";
 type RecentFileItem = { path: string; fileName: string; lastOpenedAtMs: number };
+type TooltipMode = "below-center" | "below-right" | "side-right";
+type ActiveTooltip = {
+  text: string;
+  rect: DOMRect;
+  mode: TooltipMode;
+};
 
 const speedPointsPerSecond: Record<SpeedMode, number> = {
   Low: 60,
@@ -403,7 +408,6 @@ function App() {
   const saveCurrentFileRef = useRef<(() => Promise<boolean>) | null>(null);
   const saveAsCurrentFileRef = useRef<(() => Promise<boolean>) | null>(null);
   const editorCursorListenerRef = useRef<Monaco.IDisposable | null>(null);
-  const editorResizeObserverRef = useRef<ResizeObserver | null>(null);
   const editorPaneRef = useRef<HTMLElement | null>(null);
   const editorHostRef = useRef<HTMLDivElement | null>(null);
   const decoRef = useRef<string[]>([]);
@@ -506,7 +510,6 @@ function App() {
     }
     return 520;
   });
-  const [editorViewport, setEditorViewport] = useState<{ width: number; height: number } | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playProgress, setPlayProgress] = useState(0);
   const [viewerZoomRequest, setViewerZoomRequest] = useState({ nonce: 0, scale: 1 });
@@ -520,6 +523,8 @@ function App() {
   const [viewerHotkeyScope, setViewerHotkeyScope] = useState(false);
   const [status, setStatus] = useState(t("ready"));
   const [showShortcutModal, setShowShortcutModal] = useState(false);
+  const [activeTooltip, setActiveTooltip] = useState<ActiveTooltip | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState({ left: 0, top: 0, visible: false });
   const [recordingShortcutId, setRecordingShortcutId] = useState<ShortcutId | null>(null);
   const [editorReady, setEditorReady] = useState(false);
   const [fallbackEditor, setFallbackEditor] = useState(false);
@@ -546,6 +551,7 @@ function App() {
   const dragState = useRef<{ pane: "files" | "editor"; startX: number; startWidth: number } | null>(null);
   const immersiveFilesPaneRef = useRef<HTMLElement | null>(null);
   const immersiveEditorPaneRef = useRef<HTMLElement | null>(null);
+  const tooltipLayerRef = useRef<HTMLDivElement | null>(null);
 
   const resolvedTheme: "light" | "navy" | "dark" = resolveBootTheme(themeMode, systemDark);
   const currentLocale = i18n.resolvedLanguage === "zh-CN" || i18n.language === "zh-CN" ? "zh-CN" : "en-US";
@@ -1052,7 +1058,7 @@ function App() {
     updatePlayProgress(0, true);
     setHoverFrame(null);
     setPathNavActive(false);
-    setStatus(`${t("loaded")}: ${result.fileName} (${nextFrames.length} pts)`);
+    setStatus(t("loaded"));
   }, [t, updatePlayProgress]);
 
   const loadNcFile = useCallback(async (path: string) => {
@@ -1300,8 +1306,6 @@ function App() {
     return () => {
       editorCursorListenerRef.current?.dispose();
       editorCursorListenerRef.current = null;
-      editorResizeObserverRef.current?.disconnect();
-      editorResizeObserverRef.current = null;
     };
   }, []);
 
@@ -1349,53 +1353,13 @@ function App() {
     if (!editorReady) return;
     const host = editorHostRef.current;
     if (!host) return;
-    editorResizeObserverRef.current?.disconnect();
     const observer = new ResizeObserver(() => {
-      const nextViewport = resolveMeasuredEditorViewport({
-        width: host.clientWidth,
-        height: host.clientHeight,
-      });
-      setEditorViewport((prev) => {
-        if (!nextViewport) return prev;
-        if (prev && prev.width === nextViewport.width && prev.height === nextViewport.height) return prev;
-        return { width: nextViewport.width, height: nextViewport.height };
-      });
       syncMonacoFindWidgetLayout();
     });
     observer.observe(host);
-    editorResizeObserverRef.current = observer;
-    const initialViewport = resolveMeasuredEditorViewport({
-      width: host.clientWidth,
-      height: host.clientHeight,
-    });
-    if (initialViewport) {
-      setEditorViewport({ width: initialViewport.width, height: initialViewport.height });
-    }
     syncMonacoFindWidgetLayout();
-    return () => {
-      observer.disconnect();
-      if (editorResizeObserverRef.current === observer) {
-        editorResizeObserverRef.current = null;
-      }
-    };
+    return () => observer.disconnect();
   }, [editorReady, syncMonacoFindWidgetLayout]);
-
-  useEffect(() => {
-    if (!editorReady || !showEditor || !editorViewport) return;
-    const editor = editorRef.current;
-    if (!editor) return;
-    let rafId = 0;
-    rafId = window.requestAnimationFrame(() => {
-      editor.layout({
-        width: editorViewport.width,
-        height: editorViewport.height,
-      });
-      editor.render(true);
-    });
-    return () => {
-      if (rafId) window.cancelAnimationFrame(rafId);
-    };
-  }, [editorReady, editorViewport, showEditor]);
 
   const startSimulation = async () => {
     if (!frames.length) return;
@@ -1790,7 +1754,7 @@ function App() {
     if (!conflictIds?.length) return "";
     const names = conflictIds
       .map((id) => shortcutItemMap[id] ?? id)
-      .join("、");
+      .join("��");
     return `${displayShortcut(shortcuts[recordingShortcutId])} ${t("shortcutConflictWith")} ${names}`;
   }, [displayShortcut, recordingShortcutId, shortcutConflicts, shortcutItemMap, shortcuts, t]);
 
@@ -1806,7 +1770,7 @@ function App() {
     const files = await invoke<NcFileItem[]>("list_nc_files_in_folder", { folderPath: dir });
     setFolderPath(dir);
     setFilesInFolder(files);
-    setStatus(`${t("saved")}: ${basename(path)}`);
+    setStatus(t("saved"));
     return true;
   }, [code, t]);
 
@@ -1838,6 +1802,122 @@ function App() {
       active.blur();
     }
   }, [immersiveTopChromeVisible, immersiveViewer]);
+
+  useEffect(() => {
+    const resolveMode = (target: HTMLElement): TooltipMode => {
+      if (target.closest(".side-btn")) return "side-right";
+      if (
+        target.closest(".viewer-float-actions") ||
+        target.closest(".top-chrome") ||
+        target.closest(".view-menu-list") ||
+        target.closest(".viewer-meta")
+      ) {
+        return "below-right";
+      }
+      return "below-center";
+    };
+
+    const showTooltip = (target: HTMLElement) => {
+      const text = target.getAttribute("data-ui-tooltip");
+      if (!text) return;
+      setActiveTooltip({
+        text,
+        rect: target.getBoundingClientRect(),
+        mode: resolveMode(target),
+      });
+    };
+
+    const hideTooltip = () => {
+      setActiveTooltip(null);
+      setTooltipPosition((prev) => ({ ...prev, visible: false }));
+    };
+
+    const onMouseOver = (event: MouseEvent) => {
+      const target = (event.target as HTMLElement | null)?.closest?.("[data-ui-tooltip]") as HTMLElement | null;
+      if (target) showTooltip(target);
+    };
+
+    const onMouseOut = (event: MouseEvent) => {
+      const current = (event.target as HTMLElement | null)?.closest?.("[data-ui-tooltip]") as HTMLElement | null;
+      const related = event.relatedTarget as Node | null;
+      if (!current) return;
+      if (related instanceof Node && current.contains(related)) return;
+      hideTooltip();
+    };
+
+    const onFocusIn = (event: FocusEvent) => {
+      const target = (event.target as HTMLElement | null)?.closest?.("[data-ui-tooltip]") as HTMLElement | null;
+      if (target) showTooltip(target);
+    };
+
+    const onFocusOut = (event: FocusEvent) => {
+      const current = (event.target as HTMLElement | null)?.closest?.("[data-ui-tooltip]") as HTMLElement | null;
+      const related = event.relatedTarget as Node | null;
+      if (!current) return;
+      if (related instanceof Node && current.contains(related)) return;
+      hideTooltip();
+    };
+
+    const refreshTooltip = () => {
+      if (!activeTooltip) return;
+      setActiveTooltip((prev) => (prev ? { ...prev } : prev));
+    };
+
+    document.addEventListener("mouseover", onMouseOver);
+    document.addEventListener("mouseout", onMouseOut);
+    document.addEventListener("focusin", onFocusIn);
+    document.addEventListener("focusout", onFocusOut);
+    window.addEventListener("resize", refreshTooltip);
+    window.addEventListener("scroll", refreshTooltip, true);
+
+    return () => {
+      document.removeEventListener("mouseover", onMouseOver);
+      document.removeEventListener("mouseout", onMouseOut);
+      document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("focusout", onFocusOut);
+      window.removeEventListener("resize", refreshTooltip);
+      window.removeEventListener("scroll", refreshTooltip, true);
+    };
+  }, [activeTooltip]);
+
+  useLayoutEffect(() => {
+    if (!activeTooltip || !tooltipLayerRef.current) {
+      setTooltipPosition((prev) => ({ ...prev, visible: false }));
+      return;
+    }
+
+    const rect = activeTooltip.rect;
+    const tooltipRect = tooltipLayerRef.current.getBoundingClientRect();
+    const pad = 12;
+    const gap = 10;
+    let left = 0;
+    let top = 0;
+
+    if (activeTooltip.mode === "side-right") {
+      left = rect.right + gap;
+      top = rect.top + rect.height / 2 - tooltipRect.height / 2;
+      if (left + tooltipRect.width > window.innerWidth - pad) {
+        left = rect.left - tooltipRect.width - gap;
+      }
+    } else {
+      left = activeTooltip.mode === "below-right"
+        ? rect.right - tooltipRect.width
+        : rect.left + rect.width / 2 - tooltipRect.width / 2;
+      top = rect.bottom + gap;
+      if (top + tooltipRect.height > window.innerHeight - pad) {
+        top = rect.top - tooltipRect.height - gap;
+      }
+    }
+
+    left = Math.min(Math.max(pad, left), window.innerWidth - tooltipRect.width - pad);
+    top = Math.min(Math.max(pad, top), window.innerHeight - tooltipRect.height - pad);
+
+    setTooltipPosition({
+      left,
+      top,
+      visible: true,
+    });
+  }, [activeTooltip]);
 
   useEffect(() => {
     if (!inTauriRuntime()) return;
@@ -1965,7 +2045,6 @@ function App() {
       "--immersive-top-right-safe": "84px",
     }
     : undefined;
-  const resolvedEditorViewport = editorViewport ? resolveMeasuredEditorViewport(editorViewport) : null;
   const shortcutButtonTooltip = tooltipWithShortcut(t("shortcuts"), shortcuts.openShortcuts);
   const filesButtonTooltip = tooltipWithShortcut(t("toggleFiles"), shortcuts.toggleFiles);
   const editorButtonTooltip = tooltipWithShortcut(t("toggleEditor"), shortcuts.toggleEditor);
@@ -2272,13 +2351,21 @@ function App() {
             className={`editor-pane panel${immersiveViewer ? " immersive-drawer immersive-drawer-editor" : ""}${immersiveViewer && !showEditor ? " immersive-drawer-hidden" : ""}`}
             style={immersiveEditorPaneStyle}
           >
-            <h3>{t("editor")}</h3>
+            <h3 className="panel-title-row">
+              <span className="panel-title-text">{t("editor")}</span>
+              <span
+                className="panel-title-badge"
+                title={`${t("fileEncoding")}: ${loadedProgram?.encoding ?? "-"}`}
+              >
+                {loadedProgram?.encoding ?? "-"}
+              </span>
+            </h3>
             <div ref={editorHostRef} className="editor-host">
               {!fallbackEditor ? (
                 <Editor
                   path={activeFile || loadedProgram?.filePath || "fnc://editor/current.nc"}
-                  width={resolvedEditorViewport?.widthStyle ?? "100%"}
-                  height={resolvedEditorViewport?.heightStyle ?? "100%"}
+                  width="100%"
+                  height="100%"
                   language="ncgcode"
                   theme={resolvedTheme === "light" ? "nc-light" : (resolvedTheme === "navy" ? "nc-dark" : "nc-x-dark")}
                   value={code}
@@ -2291,7 +2378,7 @@ function App() {
                     glyphMargin: true,
                     smoothScrolling: true,
                     lineNumbers: "on",
-                    automaticLayout: false,
+                    automaticLayout: true,
                     wordWrap: "off",
                     scrollbar: {
                       horizontal: "auto",
@@ -2355,7 +2442,6 @@ function App() {
               </button>
             </div>
             <Viewer3D
-              key={activeFile || loadedProgram?.fileName || "viewer-default"}
               frames={frames}
               codeLines={codeLines}
               currentFrame={currentFrame}
@@ -2445,6 +2531,16 @@ function App() {
         </div>
       </main>
 
+      {activeTooltip && (
+        <div
+          ref={tooltipLayerRef}
+          className={`ui-tooltip-layer${tooltipPosition.visible ? " visible" : ""}`}
+          style={{ left: `${tooltipPosition.left}px`, top: `${tooltipPosition.top}px` }}
+        >
+          {activeTooltip.text}
+        </div>
+      )}
+
       {showShortcutModal && (
         <div className="modal-mask" onClick={() => setShowShortcutModal(false)}>
           <div className="shortcut-modal" onClick={(e) => e.stopPropagation()}>
@@ -2500,12 +2596,17 @@ function App() {
       )}
 
       <footer className="status-bar">
-        <span>{status}</span>
-        <span>{activeFile ? basename(activeFile) : "-"}</span>
-        <span>{frames.length} path points</span>
+        <span className="status-bar-primary" title={status}>{status}</span>
+        <span className="status-bar-file" title={activeFile ? basename(activeFile) : "-"}>{activeFile ? basename(activeFile) : "-"}</span>
+        <span className="status-bar-meta">
+          <span className="status-bar-points" title={`${frames.length} ${t("pathPointsUnit")}`}>
+            {`${frames.length} ${t("pathPointsUnit")}`}
+          </span>
+        </span>
       </footer>
     </div>
   );
 }
 
 export default App;
+

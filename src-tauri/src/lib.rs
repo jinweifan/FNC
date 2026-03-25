@@ -28,6 +28,7 @@ struct ParseResult {
     file_path: String,
     file_name: String,
     extension: String,
+    encoding: String,
     total_lines: usize,
     total_moves: usize,
     warnings: Vec<String>,
@@ -228,6 +229,27 @@ struct NcFileItem {
     created_at_ms: u64,
 }
 
+fn read_text_auto(path: &Path) -> Result<(String, String), String> {
+    let bytes = fs::read(path).map_err(|e| format!("failed to read file: {e}"))?;
+
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        let text = String::from_utf8(bytes[3..].to_vec())
+            .map_err(|e| format!("failed to decode UTF-8 BOM file: {e}"))?;
+        return Ok((text, "UTF-8 BOM".to_string()));
+    }
+
+    if let Ok(text) = String::from_utf8(bytes.clone()) {
+        return Ok((text, "UTF-8".to_string()));
+    }
+
+    let (decoded, _, had_errors) = encoding_rs::GB18030.decode(&bytes);
+    if !had_errors {
+        return Ok((decoded.into_owned(), "GBK".to_string()));
+    }
+
+    Err("failed to decode file as UTF-8 or GBK".to_string())
+}
+
 #[tauri::command]
 fn set_startup_appearance(
     appearance: StartupAppearance,
@@ -240,7 +262,7 @@ fn set_startup_appearance(
 #[tauri::command]
 fn open_nc_file(path: String) -> Result<ParseResult, String> {
     let file = PathBuf::from(&path);
-    let content = fs::read_to_string(&file).map_err(|e| format!("failed to read file: {e}"))?;
+    let (content, encoding) = read_text_auto(&file)?;
     let mut lines = Vec::new();
     let mut warnings = Vec::new();
     let mut current = Vec3::default();
@@ -317,6 +339,7 @@ fn open_nc_file(path: String) -> Result<ParseResult, String> {
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_string(),
+        encoding,
         total_lines: lines.len(),
         total_moves: move_count,
         warnings,

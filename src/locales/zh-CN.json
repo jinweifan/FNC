@@ -85,6 +85,8 @@
   "legendSelected": "当前选中",
   "legendUvw": "UVW 反面路径",
   "currentCode": "当前代码",
+  "fileEncoding": "文件编码",
+  "pathPointsUnit": "路径点",
   "mode": "模式",
   "modeNormal": "雕刻机模式",
   "modeLaser": "激光模式",
