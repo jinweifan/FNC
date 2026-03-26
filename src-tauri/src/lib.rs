@@ -7,7 +7,6 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
-    thread,
     time::UNIX_EPOCH,
 };
 use tauri::{Emitter, Manager, Size, Theme, WebviewUrl, WebviewWindowBuilder};
@@ -278,15 +277,22 @@ fn notify_startup_ready(
         .show()
         .map_err(|e| format!("failed to show main window: {e}"))?;
     let _ = window.set_focus();
-    let _ = window.emit("startup-window-shown", ());
 
-    let app_handle = app.clone();
-    thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(1400));
-        if let Some(splash) = app_handle.get_webview_window("startup_splash") {
-            let _ = splash.close();
-        }
-    });
+    Ok(())
+}
+
+#[tauri::command]
+fn notify_startup_boot_ready(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if state.startup_painted.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    if let Some(splash) = app.get_webview_window("startup_splash") {
+        let _ = splash.close();
+    }
 
     Ok(())
 }
@@ -1066,13 +1072,16 @@ pub fn run() {
                 });
                 let _ = main_window.set_background_color(Some(startup_theme_background(&appearance.resolved_theme)));
                 let _ = main_window.set_theme(startup_theme_window_theme(&appearance.resolved_theme));
+                // if cfg!(target_os = "macos") {
                 show_startup_splash(app.handle(), &appearance.resolved_theme)?;
+                // }
             }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             set_startup_appearance,
             notify_startup_ready,
+            notify_startup_boot_ready,
             notify_startup_painted,
             open_nc_file,
             load_machine_profile,

@@ -1,13 +1,11 @@
-﻿import { StrictMode } from "react";
+import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./index.css";
 import "./i18n";
 import App from "./App";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { applyThemePaletteToDom, getBootThemePalette, resolveBootTheme } from "./lib/themeBoot";
-import { createStartupPaintNotifier } from "./lib/startupReveal";
 
 declare global {
   interface Window {
@@ -48,26 +46,26 @@ if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
   void getCurrentWindow().setTheme(tauriTheme).catch(() => {});
 }
 
-const startupPaintNotifier =
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
-    ? createStartupPaintNotifier(() => {
-        void import("@tauri-apps/api/core")
-          .then(({ invoke }) => invoke("notify_startup_painted"))
-          .catch(() => {});
-      })
-    : null;
-
-if (startupPaintNotifier) {
-  void listen("startup-window-shown", () => {
-    startupPaintNotifier.onWindowShown();
-  }).catch(() => {});
-}
+const hideBootSplash = () => {
+  const splash = document.getElementById("boot-splash");
+  if (!splash) return;
+  splash.classList.add("boot-hide");
+  window.setTimeout(() => splash.remove(), 220);
+};
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />
   </StrictMode>,
 );
+
+if (typeof window !== "undefined") {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      hideBootSplash();
+    });
+  });
+}
 
 if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
   window.setTimeout(() => {

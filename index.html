@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -21,6 +21,54 @@
       }
       body {
         overflow: hidden;
+      }
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: var(--boot-bg);
+        color: var(--boot-text);
+        z-index: 9999;
+        opacity: 1;
+        transition: opacity 180ms ease;
+      }
+      #boot-splash.boot-hide {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot-splash .boot-card {
+        width: min(520px, calc(100vw - 48px));
+        padding: 18px 18px 16px;
+        border-radius: 16px;
+        background: color-mix(in srgb, var(--boot-panel) 92%, transparent);
+        border: 1px solid color-mix(in srgb, var(--boot-border) 70%, transparent);
+        box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+        backdrop-filter: blur(10px);
+      }
+      #boot-splash .boot-title {
+        font-size: 18px;
+        font-weight: 650;
+        letter-spacing: 0.2px;
+      }
+      #boot-splash .boot-subtitle {
+        margin-top: 6px;
+        font-size: 13px;
+        color: var(--boot-muted);
+      }
+      #boot-splash .boot-spinner {
+        margin-top: 14px;
+        width: 22px;
+        height: 22px;
+        border-radius: 999px;
+        border: 2px solid color-mix(in srgb, var(--boot-muted) 35%, transparent);
+        border-top-color: color-mix(in srgb, var(--boot-text) 85%, transparent);
+        animation: boot-spin 700ms linear infinite;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
       }
     </style>
     <script>
@@ -67,7 +115,37 @@
     <title>First NC Viewer</title>
   </head>
   <body>
+    <div id="boot-splash" role="status" aria-live="polite">
+      <div class="boot-card">
+        <div class="boot-title">First NC Viewer</div>
+        <div class="boot-subtitle">正在启动…</div>
+        <div class="boot-spinner" aria-hidden="true"></div>
+      </div>
+    </div>
     <div id="root"></div>
+    <script>
+      (() => {
+        const closeExternalSplash = () => {
+          try {
+            if (typeof window === 'undefined') return
+            if (!('__TAURI_INTERNALS__' in window)) return
+            // Tauri injects `__TAURI_INTERNALS__`. Prefer direct invoke to avoid waiting on module graph.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const internals = (window).__TAURI_INTERNALS__
+            if (internals && typeof internals.invoke === 'function') {
+              void internals.invoke('notify_startup_boot_ready')
+            }
+          } catch {
+          }
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', closeExternalSplash, { once: true })
+        } else {
+          closeExternalSplash()
+        }
+      })()
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
