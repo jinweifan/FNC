@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "First NC Viewer",
-  "mainBinaryName": "First NC Viewer",
+  "productName": "FirstNCViewer",
+  "mainBinaryName": "FirstNCViewer",
   "version": "0.1.0",
   "identifier": "com.fncviewer.desktop",
   "build": {
@@ -32,7 +32,7 @@
     "active": true,
     "targets": "all",
     "macOS": {
-      "bundleName": "First NC Viewer",
+      "bundleName": "FirstNCViewer",
       "infoPlist": "Info.plist"
     },
     "linux": {
