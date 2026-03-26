@@ -48,6 +48,7 @@ import { resolveImmersiveSidebarLeft } from "./lib/immersiveSidebar";
 import { clampPaneWidth } from "./lib/paneWidths";
 import { getViewerSourceSignature, shouldClearTransientViewerState } from "./lib/viewerPlaybackState";
 import { applyThemePaletteToDom, getBootThemePalette, resolveBootTheme } from "./lib/themeBoot";
+import { getStartupMaskConfig } from "./lib/startupMask";
 import { resolveRestoredFrameIndex, sanitizeStoredWorkspaceSession, type StoredWorkspaceSession } from "./lib/workspaceSession";
 import { clampWorkspaceWindowState, sanitizeStoredWorkspaceWindowState } from "./lib/workspaceState";
 import { sanitizeToolbarPrefs } from "./lib/toolbarPrefs";
@@ -524,6 +525,7 @@ function App() {
   const [status, setStatus] = useState(t("ready"));
   const [showShortcutModal, setShowShortcutModal] = useState(false);
   const [activeTooltip, setActiveTooltip] = useState<ActiveTooltip | null>(null);
+  const [startupMaskVisible, setStartupMaskVisible] = useState(() => "__TAURI_INTERNALS__" in window);
   const [tooltipPosition, setTooltipPosition] = useState({ left: 0, top: 0, visible: false });
   const [recordingShortcutId, setRecordingShortcutId] = useState<ShortcutId | null>(null);
   const [editorReady, setEditorReady] = useState(false);
@@ -731,10 +733,19 @@ function App() {
     parts.push(`${t("currentCode")}: ${currentNcLineText}`);
     return parts.join(" | ");
   }, [currentFrame?.lineNumber, currentNcLineText, ncMode, t]);
+  const startupMaskConfig = useMemo(() => getStartupMaskConfig(resolvedTheme), [resolvedTheme]);
 
   useEffect(() => {
     framesRef.current = frames;
   }, [frames]);
+
+  useEffect(() => {
+    if (!startupMaskVisible || !startupMaskConfig.visible) return;
+    const timer = window.setTimeout(() => {
+      setStartupMaskVisible(false);
+    }, startupMaskConfig.fadeOutMs);
+    return () => window.clearTimeout(timer);
+  }, [startupMaskConfig.fadeOutMs, startupMaskConfig.visible, startupMaskVisible]);
 
   useEffect(() => {
     const palette = getBootThemePalette(resolvedTheme);
@@ -2098,6 +2109,13 @@ function App() {
 
   return (
     <div className={`app-shell compact${immersiveViewer ? " immersive-viewer" : ""}${immersiveTopChromeVisible ? " immersive-chrome-visible" : ""}`}>
+      {startupMaskConfig.visible && (
+        <div
+          className={`startup-mask${startupMaskVisible ? " visible" : " hidden"}`}
+          style={{ "--startup-mask-background": startupMaskConfig.background } as CSSProperties}
+          aria-hidden="true"
+        />
+      )}
       {immersiveViewer && (
         <div
           className="immersive-top-hotzone"
@@ -2609,4 +2627,3 @@ function App() {
 }
 
 export default App;
-

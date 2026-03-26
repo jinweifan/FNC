@@ -65,6 +65,22 @@ html, body, #root { margin: 0; width: 100%; height: 100%; background: var(--bg);
   position: relative;
 }
 
+.startup-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 200;
+  background:
+    radial-gradient(circle at 20% 18%, color-mix(in srgb, var(--startup-mask-background) 84%, white 16%) 0%, transparent 32%),
+    linear-gradient(180deg, color-mix(in srgb, var(--startup-mask-background) 92%, var(--panel)) 0%, var(--startup-mask-background) 100%);
+  opacity: 1;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.startup-mask.hidden {
+  opacity: 0;
+}
+
 .top-chrome {
   display: grid;
   gap: 12px;

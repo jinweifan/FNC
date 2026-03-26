@@ -4,6 +4,34 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>First NC Viewer</title>
+    <script>
+      (() => {
+        try {
+          const urlTheme = new URLSearchParams(window.location.search).get("theme");
+          const transparentMode = new URLSearchParams(window.location.search).get("transparent") === "1";
+          const storedTheme = localStorage.getItem("fnc.themeMode");
+          const storedLang = localStorage.getItem("fnc.lang");
+          const normalizedTheme = (urlTheme || (storedTheme === "dark" ? "navy" : storedTheme));
+          const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const theme = normalizedTheme === "light"
+            ? "light"
+            : normalizedTheme === "navy"
+              ? "navy"
+              : normalizedTheme === "xdark" || normalizedTheme === "dark"
+                ? "dark"
+                : (systemDark ? "dark" : "light");
+          const locale = storedLang === "en-US" ? "en-US" : "zh-CN";
+          const themeBackground = theme === "light" ? "#eef2f7" : (theme === "navy" ? "#020617" : "#000000");
+          const themeText = theme === "light" ? "#0f172a" : (theme === "navy" ? "#dbeafe" : "#e7e9ea");
+          document.documentElement.setAttribute("data-theme", theme);
+          document.documentElement.setAttribute("lang", locale);
+          document.documentElement.style.backgroundColor = transparentMode ? "transparent" : themeBackground;
+          document.documentElement.style.color = themeText;
+          document.documentElement.style.colorScheme = theme === "light" ? "light" : "dark";
+        } catch {
+        }
+      })();
+    </script>
     <style>
       :root {
         --bg: #eef2f7;
@@ -39,9 +67,7 @@
         width: 100%;
         height: 100%;
         overflow: hidden;
-        background:
-          radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--panel) 78%, white 22%) 0%, transparent 35%),
-          linear-gradient(180deg, color-mix(in srgb, var(--bg) 92%, var(--panel)) 0%, var(--bg) 100%);
+        background: transparent;
         color: var(--text);
         font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       }
@@ -54,20 +80,77 @@
         height: 100%;
         display: grid;
         place-items: center;
-        padding: 32px;
+        padding: 0;
+        background: transparent;
       }
       .brand {
-        width: min(520px, 100%);
+        width: 100%;
+        height: 100%;
         display: grid;
         justify-items: center;
-        gap: 18px;
+        align-content: center;
+        gap: 14px;
         text-align: center;
+        padding: 24px 28px;
+        border-radius: 20px;
+        border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+        background:
+          radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--panel) 84%, white 16%) 0%, transparent 34%),
+          linear-gradient(180deg, color-mix(in srgb, var(--bg) 90%, var(--panel)) 0%, var(--panel) 100%);
+        box-shadow:
+          0 22px 56px rgba(15, 23, 42, 0.18),
+          inset 0 1px 0 color-mix(in srgb, white 24%, transparent);
+        backdrop-filter: blur(10px);
       }
       .logo {
-        width: min(320px, 44vw);
+        width: min(220px, 56%);
         max-width: 100%;
         display: block;
-        filter: drop-shadow(0 12px 24px rgba(15, 23, 42, 0.12));
+        filter: drop-shadow(0 10px 20px rgba(15, 23, 42, 0.14));
+      }
+      .loader {
+        width: 40px;
+        height: 40px;
+        display: grid;
+        place-items: center;
+        position: relative;
+        filter: drop-shadow(0 8px 18px rgba(15, 23, 42, 0.16));
+      }
+      .loader-ring,
+      .loader-orbit {
+        position: absolute;
+        inset: 0;
+        border-radius: 999px;
+      }
+      .loader-ring {
+        border: 2px solid color-mix(in srgb, var(--border) 72%, transparent);
+        border-top-color: color-mix(in srgb, var(--text) 28%, var(--progress-b));
+        opacity: 0.92;
+      }
+      .loader-orbit {
+        animation: spin 1.05s linear infinite;
+      }
+      .loader-orbit::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 50%;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        transform: translateX(-50%);
+        background: linear-gradient(135deg, var(--progress-a), var(--progress-c));
+        box-shadow:
+          0 0 0 2px color-mix(in srgb, var(--panel) 78%, transparent),
+          0 0 14px color-mix(in srgb, var(--progress-b) 58%, transparent);
+      }
+      .loader-core {
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--panel) 88%, transparent);
+        border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+        box-shadow: inset 0 1px 0 color-mix(in srgb, white 28%, transparent);
       }
       .logo-dark {
         display: none;
@@ -87,59 +170,27 @@
         display: block;
       }
       .title {
-        font-size: 24px;
+        font-size: 22px;
         line-height: 1.15;
         font-weight: 700;
         letter-spacing: 0.01em;
       }
       .subtitle {
-        margin-top: 8px;
+        margin-top: 6px;
         color: var(--muted);
-        font-size: 13px;
+        font-size: 12px;
         line-height: 1.4;
         font-weight: 500;
       }
-      .progress {
-        position: relative;
-        width: min(360px, 68vw);
-        margin-top: 14px;
-        height: 6px;
-        border-radius: 999px;
-        overflow: hidden;
-        background: color-mix(in srgb, var(--border) 46%, transparent);
-      }
-      .progress::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        width: 34%;
-        border-radius: inherit;
-        background: linear-gradient(90deg, var(--progress-a) 0%, var(--progress-b) 55%, var(--progress-c) 100%);
-        animation: slide 1.3s ease-in-out infinite;
-      }
-      @keyframes slide {
-        0% { transform: translateX(-125%); }
-        60% { transform: translateX(195%); }
-        100% { transform: translateX(195%); }
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
       }
     </style>
     <script>
       (() => {
         try {
-          const storedTheme = localStorage.getItem("fnc.themeMode");
-          const storedLang = localStorage.getItem("fnc.lang");
-          const normalizedTheme = storedTheme === "dark" ? "navy" : storedTheme;
-          const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-          const theme = normalizedTheme === "light"
-            ? "light"
-            : normalizedTheme === "navy"
-              ? "navy"
-              : normalizedTheme === "xdark"
-                ? "dark"
-                : (systemDark ? "dark" : "light");
-          const locale = storedLang === "en-US" ? "en-US" : "zh-CN";
-          document.documentElement.setAttribute("data-theme", theme);
-          document.documentElement.setAttribute("lang", locale);
+          const locale = document.documentElement.getAttribute("lang") === "en-US" ? "en-US" : "zh-CN";
           document.addEventListener("DOMContentLoaded", () => {
             const subtitle = document.getElementById("subtitle");
             if (subtitle) {
@@ -160,8 +211,12 @@
           <div class="title">First NC Viewer</div>
           <div class="subtitle" id="subtitle">Loading workspace</div>
         </div>
+        <div class="loader" aria-hidden="true">
+          <div class="loader-ring"></div>
+          <div class="loader-orbit"></div>
+          <div class="loader-core"></div>
+        </div>
       </div>
-      <div class="progress" aria-hidden="true"></div>
     </div>
   </body>
 </html>

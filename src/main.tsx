@@ -1,11 +1,13 @@
 ﻿import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./index.css";
 import "./i18n";
 import App from "./App";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import { applyThemePaletteToDom, getBootThemePalette, resolveBootTheme } from "./lib/themeBoot";
+import { createStartupPaintNotifier } from "./lib/startupReveal";
 
 declare global {
   interface Window {
@@ -46,8 +48,31 @@ if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
   void getCurrentWindow().setTheme(tauriTheme).catch(() => {});
 }
 
+const startupPaintNotifier =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+    ? createStartupPaintNotifier(() => {
+        void import("@tauri-apps/api/core")
+          .then(({ invoke }) => invoke("notify_startup_painted"))
+          .catch(() => {});
+      })
+    : null;
+
+if (startupPaintNotifier) {
+  void listen("startup-window-shown", () => {
+    startupPaintNotifier.onWindowShown();
+  }).catch(() => {});
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />
   </StrictMode>,
 );
+
+if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+  window.setTimeout(() => {
+    void import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("notify_startup_ready"))
+      .catch(() => {});
+  }, 0);
+}

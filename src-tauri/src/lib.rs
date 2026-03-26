@@ -4,12 +4,13 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
+    thread,
     time::UNIX_EPOCH,
 };
-use tauri::{Emitter, Manager, Size, Theme};
+use tauri::{Emitter, Manager, Size, Theme, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
 use objc2_foundation::{NSProcessInfo, NSString};
@@ -20,6 +21,8 @@ struct AppState {
     next_session_id: AtomicU64,
     locale: Mutex<String>,
     pending_launch_files: Mutex<Vec<String>>,
+    startup_revealed: AtomicBool,
+    startup_painted: AtomicBool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,6 +260,51 @@ fn set_startup_appearance(
 ) -> Result<StartupAppearance, String> {
     write_startup_appearance(&app, &appearance)?;
     Ok(appearance)
+}
+
+#[tauri::command]
+fn notify_startup_ready(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if state.startup_revealed.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window unavailable".to_string())?;
+    window
+        .show()
+        .map_err(|e| format!("failed to show main window: {e}"))?;
+    let _ = window.set_focus();
+    let _ = window.emit("startup-window-shown", ());
+
+    let app_handle = app.clone();
+    thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1400));
+        if let Some(splash) = app_handle.get_webview_window("startup_splash") {
+            let _ = splash.close();
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn notify_startup_painted(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if state.startup_painted.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    if let Some(splash) = app.get_webview_window("startup_splash") {
+        let _ = splash.close();
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -645,6 +693,63 @@ fn startup_theme_window_theme(theme: &str) -> Option<Theme> {
     }
 }
 
+fn startup_splash_path(theme: &str) -> String {
+    format!("startup-splash.html?theme={theme}&transparent=1")
+}
+
+fn startup_splash_window_background() -> tauri::webview::Color {
+    tauri::webview::Color(0, 0, 0, 0)
+}
+
+fn show_startup_splash(app: &tauri::AppHandle, theme: &str) -> Result<(), String> {
+    if app.get_webview_window("startup_splash").is_some() {
+        return Ok(());
+    }
+
+    let main_window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window unavailable".to_string())?;
+
+    let outer_size = main_window
+        .outer_size()
+        .map_err(|e| format!("failed to read main window size: {e}"))?;
+    let outer_position = main_window
+        .outer_position()
+        .map_err(|e| format!("failed to read main window position: {e}"))?;
+
+    let splash_width = outer_size.width.min(760);
+    let splash_height = outer_size.height.min(500);
+    let splash_x = outer_position.x + ((outer_size.width.saturating_sub(splash_width)) / 2) as i32;
+    let splash_y = outer_position.y + ((outer_size.height.saturating_sub(splash_height)) / 2) as i32;
+
+    let splash = WebviewWindowBuilder::new(
+        app,
+        "startup_splash",
+        WebviewUrl::App(startup_splash_path(theme).into()),
+    )
+    .title("First NC Viewer")
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .closable(false)
+    .focused(true)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .visible(true)
+    .position(splash_x as f64, splash_y as f64)
+    .inner_size(splash_width as f64, splash_height as f64)
+    .background_color(startup_splash_window_background())
+    .theme(startup_theme_window_theme(theme))
+    .build()
+    .map_err(|e| format!("failed to build startup splash: {e}"))?;
+
+    let _ = splash.set_background_color(Some(startup_splash_window_background()));
+    let _ = splash.set_theme(startup_theme_window_theme(theme));
+    Ok(())
+}
+
 fn apply_adaptive_window_size(app: &tauri::App) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -942,6 +1047,8 @@ pub fn run() {
             next_session_id: AtomicU64::new(0),
             locale: Mutex::new("zh-CN".to_string()),
             pending_launch_files: Mutex::new(initial_launch_files),
+            startup_revealed: AtomicBool::new(false),
+            startup_painted: AtomicBool::new(false),
         })
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -959,18 +1066,14 @@ pub fn run() {
                 });
                 let _ = main_window.set_background_color(Some(startup_theme_background(&appearance.resolved_theme)));
                 let _ = main_window.set_theme(startup_theme_window_theme(&appearance.resolved_theme));
+                show_startup_splash(app.handle(), &appearance.resolved_theme)?;
             }
             Ok(())
         })
-        .on_page_load(|webview, _payload| {
-            if webview.label() == "main" {
-                let window = webview.window();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             set_startup_appearance,
+            notify_startup_ready,
+            notify_startup_painted,
             open_nc_file,
             load_machine_profile,
             load_tool_library,
