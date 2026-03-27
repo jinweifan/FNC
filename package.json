@@ -14,10 +14,11 @@
     "tauri:build:mac:intel": "node ./scripts/package-platform.mjs mac:intel",
     "tauri:build:mac:arm": "node ./scripts/package-platform.mjs mac",
     "package:linux": "node ./scripts/package-platform.mjs linux",
+    "package:linux:docker": "bash ./scripts/package-linux-docker.sh",
     "package:mac": "node ./scripts/package-platform.mjs mac",
     "package:mac:intel": "node ./scripts/package-platform.mjs mac:intel",
     "package:win": "node ./scripts/package-platform.mjs win",
-    "test:packaging": "node --test scripts/package-platform.test.mjs",
+    "test:packaging": "node --test scripts/package-platform.test.mjs scripts/desktop-workflow.test.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
