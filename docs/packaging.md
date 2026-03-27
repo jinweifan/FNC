@@ -147,15 +147,13 @@ npm run package:win
 矩阵内容：
 
 - `windows-latest` -> `npm run package:win`
-- `ubuntu-22.04` -> `npm run package:linux`
-- `macos-13` -> `npm run package:mac:intel`
+- `ubuntu-22.04` -> `npm run package:linux:docker`
 - `macos-14` -> `npm run package:mac`
 
 上传的 artifact 名称：
 
 - `fnc-windows-x64`
 - `fnc-linux-x64`
-- `fnc-macos-intel`
 - `fnc-macos-apple-silicon`
 
 这套工作流的关键约束是：
@@ -163,6 +161,7 @@ npm run package:win
 - CI 与本地共用同一套 npm 打包入口
 - GitHub Actions 只负责选择 runner、安装依赖、上传产物
 - 具体 Tauri target 与 bundle 参数只在一处定义，即 [`scripts/package-platform.mjs`](/Users/reddyfan/code/FNC/scripts/package-platform.mjs)
+- Linux CI 构建固定使用 [`docker/linux-builder-jammy.Dockerfile`](/Users/reddyfan/code/FNC/docker/linux-builder-jammy.Dockerfile)，确保 Ubuntu 22.04 及以上兼容基线
 
 ## 7. Ubuntu Docker 构建
 

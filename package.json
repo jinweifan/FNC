@@ -14,10 +14,11 @@
     "tauri:build:mac:intel": "node ./scripts/package-platform.mjs mac:intel",
     "tauri:build:mac:arm": "node ./scripts/package-platform.mjs mac",
     "package:linux": "node ./scripts/package-platform.mjs linux",
+    "package:linux:docker": "bash ./scripts/package-linux-docker.sh",
     "package:mac": "node ./scripts/package-platform.mjs mac",
     "package:mac:intel": "node ./scripts/package-platform.mjs mac:intel",
     "package:win": "node ./scripts/package-platform.mjs win",
-    "test:packaging": "node --test scripts/package-platform.test.mjs",
+    "test:packaging": "node --test scripts/package-platform.test.mjs scripts/desktop-workflow.test.mjs scripts/package-manifest.test.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -38,7 +39,6 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@tauri-apps/cli": "^2.10.1",
-    "@tauri-apps/cli-win32-x64-msvc": "^2.10.1",
     "@types/node": "^24.12.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -50,9 +50,5 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.57.0",
     "vite": "^8.0.1"
-  },
-  "optionalDependencies": {
-    "@tauri-apps/cli-linux-x64-gnu": "^2.10.1",
-    "@tauri-apps/cli-win32-x64-msvc": "^2.10.1"
   }
 }
