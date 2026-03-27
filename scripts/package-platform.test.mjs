@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { resolveBuildPlan, resolveExecutionPlan } from "./package-platform.mjs";
+import { buildEnvForPlatform, resolveBuildPlan, resolveExecutionPlan } from "./package-platform.mjs";
 
 test("mac default resolves to Apple Silicon app and dmg bundles", () => {
   const plan = resolveBuildPlan("mac");
@@ -49,4 +49,9 @@ test("linux keeps Tauri-managed bundle generation", () => {
   const plan = resolveExecutionPlan("linux");
   assert.equal(plan.tauriBundles, "appimage,deb");
   assert.equal(plan.createPlainDmg, false);
+});
+
+test("linux packaging env enables extracted AppImage execution", () => {
+  const env = buildEnvForPlatform({ PATH: "/usr/bin", HOME: "/tmp/home" }, "linux");
+  assert.equal(env.APPIMAGE_EXTRACT_AND_RUN, "1");
 });

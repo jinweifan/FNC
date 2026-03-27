@@ -68,9 +68,12 @@ function assertHostPlatform(name) {
   );
 }
 
-function buildEnv() {
-  const env = { ...process.env };
-  if (process.platform !== "win32" && env.HOME) {
+export function buildEnvForPlatform(baseEnv, platform) {
+  const env = { ...baseEnv };
+  if (platform === "linux") {
+    env.APPIMAGE_EXTRACT_AND_RUN = env.APPIMAGE_EXTRACT_AND_RUN || "1";
+  }
+  if (platform !== "win32" && env.HOME) {
     const cargoBin = path.join(env.HOME, ".cargo", "bin");
     try {
       accessSync(cargoBin, constants.X_OK);
@@ -80,6 +83,10 @@ function buildEnv() {
     }
   }
   return env;
+}
+
+function buildEnv() {
+  return buildEnvForPlatform(process.env, process.platform);
 }
 
 function runCommand(command, args, options) {
@@ -123,12 +130,22 @@ function bundleRoot(repoRoot, target) {
   return path.join(repoRoot, "src-tauri", "target", target, "release", "bundle");
 }
 
-function createPlainMacDmg(repoRoot, target) {
+async function reSignMacAppBundle(repoRoot, appBundlePath) {
+  await runCommand(
+    "codesign",
+    ["--force", "--deep", "--sign", "-", appBundlePath],
+    { cwd: repoRoot, env: buildEnv() },
+  );
+}
+
+async function createPlainMacDmg(repoRoot, target) {
   const { productName, version } = readTauriMetadata(repoRoot);
   const appBundlePath = path.join(bundleRoot(repoRoot, target), "macos", `${productName}.app`);
   if (!existsSync(appBundlePath)) {
     throw new Error(`Expected app bundle at ${appBundlePath}, but it was not found.`);
   }
+
+  await reSignMacAppBundle(repoRoot, appBundlePath);
 
   const dmgDir = path.join(bundleRoot(repoRoot, target), "dmg");
   mkdirSync(dmgDir, { recursive: true });
