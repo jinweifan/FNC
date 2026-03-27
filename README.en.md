@@ -1,8 +1,8 @@
-﻿# FNCViewer
+﻿# First NC Viewer
 
 [中文 README](./README.md)
 
-FNCViewer is a cross-platform desktop application for NC viewing, editing, and 3D simulation.
+First NC Viewer is a cross-platform desktop application for NC viewing, editing, and 3D simulation.
 
 ## Quick Start
 
@@ -13,7 +13,7 @@ FNCViewer is a cross-platform desktop application for NC viewing, editing, and 3
 
 ### Laser Integrated Machine Mode (Core)
 
-Laser Integrated Machine mode is the most distinctive capability in FNCViewer. It is designed for dual-side machining programs and synchronized verification.
+Laser Integrated Machine mode is the most distinctive capability in First NC Viewer. It is designed for dual-side machining programs and synchronized verification.
 
 - Front-side coordinate domain: `XYZ`
 - Back-side coordinate domain: `UVW`

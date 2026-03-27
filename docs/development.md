@@ -1,4 +1,4 @@
-# FNCViewer 开发文档
+# First NC Viewer 开发文档
 
 ## 1. 开发环境要求
 
@@ -85,7 +85,7 @@ cargo --version
 
 检查：
 
-- OS 是否将该扩展绑定到 FNCViewer
+- OS 是否将该扩展绑定到 First NC Viewer
 - 启动参数是否传入（Rust `get_launch_nc_file`）
 
 ### 7.4 打包安装包超时

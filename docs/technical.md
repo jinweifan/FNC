@@ -1,8 +1,8 @@
-# FNCViewer 技术文档
+# First NC Viewer 技术文档
 
 ## 1. 技术架构概览
 
-FNCViewer 采用 Tauri 双层架构：
+First NC Viewer 采用 Tauri 双层架构：
 
 - 前端层（React/TypeScript）：负责 UI、编辑器、3D 交互、状态管理
 - 桌面层（Rust/Tauri）：负责本地文件 IO、命令接口、系统窗口与打包
