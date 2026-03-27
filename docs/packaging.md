@@ -1,18 +1,42 @@
-﻿# First NC Viewer 打包与安装文档
+﻿# First NC Viewer 打包文档
 
-本文档覆盖以下内容：
-- Windows x64 打包（NSIS + MSI）
-- Ubuntu x64 打包（AppImage + DEB）
-- Ubuntu 安装与运行（详细）
-- 常见问题排查（含你当前环境中出现过的问题）
+本文档统一说明两类打包方式：
 
-## 1. 目标产物
+- 本地打包：在对应操作系统主机上执行单条命令，产出该系统安装包
+- GitHub Actions 打包：一次触发，同时产出 Windows、Ubuntu、macOS 安装包
 
-- Windows x64：`nsis` + `msi`
-- Ubuntu x64：`AppImage` + `deb`
-- macOS Apple Silicon：`app` + `dmg`（需在 macOS 主机构建）
+## 1. 支持的产物
 
-## 2. 构建前准备
+- Windows x64：`NSIS` + `MSI`
+- Ubuntu x64：`AppImage` + `DEB`
+- macOS Apple Silicon：`app` + `dmg`
+- macOS Intel：`app` + `dmg`
+
+## 2. 统一命令入口
+
+仓库使用以下统一打包命令：
+
+```bash
+npm run package:linux
+npm run package:mac
+npm run package:mac:intel
+npm run package:win
+```
+
+对应关系如下：
+
+- `package:linux` -> `x86_64-unknown-linux-gnu` + `appimage,deb`
+- `package:mac` -> `aarch64-apple-darwin` + `app,dmg`
+- `package:mac:intel` -> `x86_64-apple-darwin` + `app,dmg`
+- `package:win` -> `x86_64-pc-windows-msvc` + `nsis,msi`
+
+说明：
+
+- `macOS` 默认命令是 `npm run package:mac`，即 Apple Silicon 版本
+- 不提供误导性的“本地一次产出所有操作系统版本”命令
+- 每个命令都要求在对应操作系统主机上执行
+
+## 3. 本地打包前准备
 
 在仓库根目录执行：
 
@@ -20,178 +44,183 @@
 npm ci
 ```
 
-并确保：
-- `node -v`、`npm -v` 可用
-- `cargo --version` 可用
-- `tauri -V` 可用（或 `npm run tauri -- -V`）
+并确认以下工具可用：
 
-若 `cargo` 不可用（Linux/macOS）：
+- `node -v`
+- `npm -v`
+- `cargo --version`
+
+项目打包入口在 [`package.json`](/Users/reddyfan/code/FNC/package.json)，具体分发逻辑在 [`scripts/package-platform.mjs`](/Users/reddyfan/code/FNC/scripts/package-platform.mjs)。
+
+## 4. 本地打包
+
+### 4.1 Ubuntu x64
+
+推荐在 Ubuntu 22.04 或兼容环境执行。
+
+安装系统依赖：
 
 ```bash
-source "$HOME/.cargo/env"
+sudo apt-get update
+sudo apt-get install -y \
+  libwebkit2gtk-4.1-dev \
+  libgtk-3-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  patchelf
 ```
 
-## 3. Windows x64 打包
-
-### 3.1 命令
-
-```bash
-npm run tauri:build:win
-```
-
-### 3.2 产物目录
-
-- `src-tauri/target/release/bundle/nsis`
-- `src-tauri/target/release/bundle/msi`
-
-### 3.3 常见错误
-
-1. `failed to remove ... FirstNCViewer.exe (os error 5)`
-- 原因：程序正在运行占用文件。
-- 处理：先关闭 First NC Viewer（必要时结束进程），再重试打包。
-
-2. NSIS/WiX 下载超时
-- 原因：网络问题。
-- 处理：重试或使用 CI 构建。
-
-## 4. Ubuntu x64 打包
-
-说明：推荐在 Ubuntu 主机或 Docker Linux 容器中执行。
-
-### 4.1 直接在 Ubuntu 主机打包
+构建命令：
 
 ```bash
 npm ci
-source "$HOME/.cargo/env"
-npm run tauri -- build --target x86_64-unknown-linux-gnu --bundles appimage,deb
+npm run package:linux
 ```
 
-### 4.2 使用仓库 Docker 打包（Windows 主机推荐）
+产物目录：
+
+- `src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage`
+- `src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb`
+
+### 4.2 macOS Apple Silicon
+
+在 Apple Silicon Mac 上执行：
+
+```bash
+npm ci
+npm run package:mac
+```
+
+产物目录：
+
+- `src-tauri/target/aarch64-apple-darwin/release/bundle/app`
+- `src-tauri/target/aarch64-apple-darwin/release/bundle/dmg`
+
+### 4.3 macOS Intel
+
+在 Intel Mac 上执行：
+
+```bash
+npm ci
+npm run package:mac:intel
+```
+
+产物目录：
+
+- `src-tauri/target/x86_64-apple-darwin/release/bundle/app`
+- `src-tauri/target/x86_64-apple-darwin/release/bundle/dmg`
+
+### 4.4 Windows x64
+
+在 Windows 主机上执行：
 
 ```powershell
-# 在仓库根目录
+npm ci
+npm run package:win
+```
+
+产物目录：
+
+- `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis`
+- `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi`
+
+## 5. 本地打包限制
+
+- Linux 包请在 Linux 主机上打
+- macOS 包请在 macOS 主机上打
+- Windows 包请在 Windows 主机上打
+- 本仓库不把“交叉编译全部桌面安装包”作为默认工作流
+
+如果在错误的平台上执行命令，[`scripts/package-platform.mjs`](/Users/reddyfan/code/FNC/scripts/package-platform.mjs) 会直接报错并退出。
+
+## 6. GitHub Actions 一键全平台打包
+
+工作流文件：
+
+- [`.github/workflows/desktop-build.yml`](/Users/reddyfan/code/FNC/.github/workflows/desktop-build.yml)
+
+触发方式：
+
+- 手动触发：`workflow_dispatch`
+- 发布触发：推送 `v*` tag
+
+矩阵内容：
+
+- `windows-latest` -> `npm run package:win`
+- `ubuntu-22.04` -> `npm run package:linux`
+- `macos-13` -> `npm run package:mac:intel`
+- `macos-14` -> `npm run package:mac`
+
+上传的 artifact 名称：
+
+- `fnc-windows-x64`
+- `fnc-linux-x64`
+- `fnc-macos-intel`
+- `fnc-macos-apple-silicon`
+
+这套工作流的关键约束是：
+
+- CI 与本地共用同一套 npm 打包入口
+- GitHub Actions 只负责选择 runner、安装依赖、上传产物
+- 具体 Tauri target 与 bundle 参数只在一处定义，即 [`scripts/package-platform.mjs`](/Users/reddyfan/code/FNC/scripts/package-platform.mjs)
+
+## 7. Ubuntu Docker 构建
+
+如果当前主机不是 Linux，但你只想在本地额外产出 Ubuntu x64 包，可以继续使用仓库内 Docker 方案：
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\docker\build-linux-in-docker.ps1
 ```
 
-如需 Ubuntu 22.04（Jammy）兼容优先镜像，可手动执行：
+对应文件：
 
-```powershell
-docker build -f .\docker\linux-builder-jammy.Dockerfile -t first-nc-viewer-linux-builder:jammy .
-docker run --rm -v "${PWD}:/work" -w /work first-nc-viewer-linux-builder:jammy bash -lc "npm ci && npm run tauri -- build --target x86_64-unknown-linux-gnu --bundles appimage,deb"
-```
+- [`docker/build-linux-in-docker.ps1`](/Users/reddyfan/code/FNC/docker/build-linux-in-docker.ps1)
+- [`docker/linux-builder.Dockerfile`](/Users/reddyfan/code/FNC/docker/linux-builder.Dockerfile)
 
-### 4.3 产物目录
+说明：
 
-- `src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/FirstNCViewer_0.1.0_amd64.AppImage`
-- `src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/first-nc-viewer_0.1.0_amd64.deb`
+- Docker 方案只覆盖 Linux 包
+- 它不是“本地全平台一键打包”
 
-## 5. Ubuntu 安装与运行（详细）
+## 8. 常见问题
 
-### 5.1 推荐安装方式：DEB
+### 8.1 macOS 能不能在 Linux 或 Windows 上直接打包？
 
-先确保系统源可访问：
+默认不支持，也不作为本仓库标准流程。macOS 包应在 macOS 主机或 `macos` GitHub Actions runner 上构建。
 
-```bash
-sudo apt update
-```
+### 8.2 为什么没有 `package:all-supported`？
 
-安装包：
+因为这个名字会误导人以为单台主机能同时生成 Windows、Linux、macOS 全部安装包。实际上标准、安全的桌面打包流程应该按目标操作系统分别构建。
 
-```bash
-cd ~/Downloads
-sudo apt install ./first-nc-viewer_0.1.0_amd64.deb
-```
+### 8.3 Windows 打包报文件占用错误
 
-安装后启动：
+若出现类似 `failed to remove ... FirstNCViewer.exe (os error 5)`：
 
-```bash
-first-nc-viewer
-```
+- 先关闭正在运行的 First NC Viewer
+- 必要时结束相关进程
+- 然后重新执行 `npm run package:win`
 
-或在应用菜单中搜索 `First NC Viewer`。
+### 8.4 Ubuntu 安装 `DEB` 时遇到系统依赖错误
 
-### 5.2 备用方式：AppImage
-
-```bash
-cd ~/Downloads
-chmod +x ./FirstNCViewer_0.1.0_amd64.AppImage
-./FirstNCViewer_0.1.0_amd64.AppImage
-```
-
-## 6. Ubuntu 常见问题排查（精确版）
-
-### 6.1 `暂时不能解析域名 mirrors.ustc.edu.cn`
-
-这是系统 DNS/网络问题，不是 First NC Viewer 包本身问题。
-
-处理顺序：
-
-```bash
-# 1) 检查网络
-ping -c 3 8.8.8.8
-ping -c 3 mirrors.ustc.edu.cn
-
-# 2) 更新索引
-sudo apt update
-
-# 3) 再安装
-sudo apt install ./first-nc-viewer_0.1.0_amd64.deb
-```
-
-若公司/校园网有限制，建议切换可用镜像源或先修复 DNS。
-
-### 6.2 安装 DEB 时出现 `dkms` / `virtualbox` 失败
-
-你日志中的错误属于系统内核模块（VirtualBox DKMS）编译失败，与 First NC Viewer 功能无直接关系。
-
-可先修复系统包状态：
+先修复系统包状态：
 
 ```bash
 sudo dpkg --configure -a
 sudo apt -f install
 ```
 
-然后再次执行：
+然后重新安装：
 
 ```bash
 sudo apt install ./first-nc-viewer_0.1.0_amd64.deb
 ```
 
-### 6.3 AppImage 报 WebKit/渲染相关错误
+## 9. 验证建议
 
-优先建议使用 `deb` 安装方式（最稳）。
+打包后建议先用 `demo_nc/` 下的 `.nc/.anc` 文件做冷启动验证，至少检查：
 
-若必须使用 AppImage，可尝试：
-
-```bash
-LIBGL_ALWAYS_SOFTWARE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 GDK_BACKEND=x11 ./FirstNCViewer_0.1.0_amd64.AppImage
-```
-
-注意：以上环境变量可能导致明显卡顿，仅用于临时兼容。
-
-### 6.4 双击 `.nc/.anc` 关联打开
-
-安装 DEB 后可在系统”默认应用”中把 `.nc/.anc` 关联到 `First NC Viewer`。
-
-若关联后未加载内容，请确认：
-- 文件后缀为 `.nc` 或 `.anc`
-- 文件可读权限正常
-- 启动的是打包版应用（不是浏览器开发地址）
-
-## 7. 验证清单（建议）
-
-安装后建议先用示例文件验证：
-- 仓库 `demo_nc/` 下的 `.nc/.anc`
-
-检查点：
-- 文件打开与文件列表切换
-- 代码编辑器与 3D 联动
+- 文件打开与文件切换
+- 代码编辑器和 3D 联动
 - 进度条拖动与播放
-- 网格开关（默认首次启动为开启）
-- 主题/语言切换
-
-## 8. 发布建议
-
-- 本地通过验证后再发包
-- 产物文件名带版本号
-- Windows 与 Ubuntu 分别做一次冷启动验证
+- 网格开关
+- 主题与语言切换
